@@ -38,9 +38,8 @@ MODEL = "gemini-2.5-flash"
 GEMINI_SEMAPHORE = asyncio.Semaphore(10)
 
 # ---- system prompt cache (CachedContent) ----
-_system_cache: Any | None = None
-_system_cache_expires: float = 0.0
-_system_cache_prompt_hash: str | None = None
+# 모델별로 캐시를 분리한다. key=(model, prompt_hash), value=(cache_obj, expires_at)
+_system_caches: dict[tuple[str, str], tuple[Any, float]] = {}
 _system_cache_lock = threading.Lock()
 
 # ---- JSON schema for parallel inspect_one ----
@@ -108,46 +107,39 @@ INSPECT_ONE_SCHEMA: dict[str, Any] = {
 
 def invalidate_system_cache() -> None:
     """히스토리/가이드라인 변경 시 호출하여 시스템 프롬프트 캐시를 무효화합니다."""
-    global _system_cache, _system_cache_expires, _system_cache_prompt_hash
     with _system_cache_lock:
-        _system_cache = None
-        _system_cache_expires = 0.0
-        _system_cache_prompt_hash = None
+        _system_caches.clear()
 
 
-def _get_or_create_cache(system_prompt: str) -> str | None:
-    """시스템 프롬프트 캐시 생성/재사용. TTL 1시간(55분마다 갱신). 실패 시 None."""
-    global _system_cache, _system_cache_expires, _system_cache_prompt_hash
+def _get_or_create_cache(system_prompt: str, *, model: str = MODEL) -> str | None:
+    """시스템 프롬프트 캐시 생성/재사용. TTL 1시간(55분마다 갱신). 실패 시 None.
+    모델별로 슬롯을 분리하여 Flash/Pro 등 다른 모델 캐시가 충돌하지 않도록 한다."""
     now = time.time()
     prompt_hash = hashlib.sha256((system_prompt or "").encode("utf-8")).hexdigest()
+    key = (model, prompt_hash)
     with _system_cache_lock:
-        if (
-            _system_cache
-            and now < _system_cache_expires
-            and _system_cache_prompt_hash == prompt_hash
-            and getattr(_system_cache, "name", None)
-        ):
-            print(f"[system_cache] HIT: {_system_cache.name}", flush=True)
-            return str(_system_cache.name)
+        existing = _system_caches.get(key)
+        if existing:
+            cache_obj, expires_at = existing
+            if now < expires_at and getattr(cache_obj, "name", None):
+                print(f"[system_cache] HIT ({model}): {cache_obj.name}", flush=True)
+                return str(cache_obj.name)
 
         try:
-            _system_cache = client.caches.create(
-                model=MODEL,
+            cache_obj = client.caches.create(
+                model=model,
                 config=types.CreateCachedContentConfig(
                     system_instruction=system_prompt,
                     ttl="3600s",
                 ),
             )
-            print(f"[system_cache] CREATED: {_system_cache.name}", flush=True)
-            _system_cache_expires = now + 3300  # 55분
-            _system_cache_prompt_hash = prompt_hash
-            return str(getattr(_system_cache, "name", "") or "") or None
+            print(f"[system_cache] CREATED ({model}): {cache_obj.name}", flush=True)
+            _system_caches[key] = (cache_obj, now + 3300)  # 55분
+            return str(getattr(cache_obj, "name", "") or "") or None
         except Exception as e:
             # 캐시 API 미지원/권한/네트워크 등으로 실패하면 캐시 없이 진행
-            print(f"[system_cache] FAILED: {e}", flush=True)
-            _system_cache = None
-            _system_cache_expires = 0.0
-            _system_cache_prompt_hash = None
+            print(f"[system_cache] FAILED ({model}): {e}", flush=True)
+            _system_caches.pop(key, None)
             return None
 
 
@@ -268,21 +260,22 @@ def check_conflict(new_item: dict[str, Any], existing_item: dict[str, Any]) -> C
     return ConflictCheck.model_validate_json(resp.text)
 
 
-def inspect_creative(system_prompt: str, contents: Any) -> str:
+def inspect_creative(system_prompt: str, contents: Any, *, model: str = MODEL) -> str:
     """
     Inspect a creative using free-form text output.
     contents는 str 또는 google.genai.types.Part 리스트 등을 받을 수 있습니다.
+    model을 지정하면 해당 모델로 호출하고 캐시도 모델별로 분리됩니다.
     """
-    cache_name = _get_or_create_cache(system_prompt)
+    cache_name = _get_or_create_cache(system_prompt, model=model)
     if cache_name:
         resp = client.models.generate_content(
-            model=MODEL,
+            model=model,
             contents=contents,
             config=types.GenerateContentConfig(cached_content=cache_name),
         )
     else:
         resp = client.models.generate_content(
-            model=MODEL,
+            model=model,
             contents=contents,
             config=types.GenerateContentConfig(system_instruction=system_prompt),
         )

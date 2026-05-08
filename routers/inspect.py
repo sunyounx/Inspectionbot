@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -126,8 +127,12 @@ async def inspect(req: InspectRequest):
     else:
         raise HTTPException(status_code=400, detail=f"invalid mode: {req.mode}")
 
+    copy_model = (os.getenv("COPY_CREATE_MODEL") or "").strip()
     async with GEMINI_SEMAPHORE:
-        feedback = await asyncio.to_thread(inspect_creative, system_prompt, contents)
+        if req.mode == "카피창작" and copy_model:
+            feedback = await asyncio.to_thread(inspect_creative, system_prompt, contents, model=copy_model)
+        else:
+            feedback = await asyncio.to_thread(inspect_creative, system_prompt, contents)
     return InspectResponse(feedback=feedback, rules_checked=rules_n)
 
 
