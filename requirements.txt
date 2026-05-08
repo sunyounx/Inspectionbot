@@ -1,0 +1,15 @@
+aiofiles
+av
+fastapi
+google-api-python-client
+google-auth
+google-genai
+httpx
+openpyxl
+Pillow
+psycopg2-binary
+python-docx
+python-dotenv
+python-multipart
+slack-sdk
+uvicorn[standard]

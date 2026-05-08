@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Inspection BOT · 올더뮤 검수</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div id="authGate" class="auth-gate" role="dialog" aria-modal="true" aria-labelledby="authGateTitle">
+      <div class="auth-gate-card glass">
+        <div class="auth-gate-brand">
+          <span class="sidebar-brand-mark">PC</span>
+          <div>
+            <h1 id="authGateTitle" class="auth-gate-title">올더뮤 검수봇 v3</h1>
+            <p class="auth-gate-sub">Inspection Bot</p>
+          </div>
+        </div>
+        <p class="auth-gate-msg">올더뮤 검수봇을 사용하려면 Google 계정으로 로그인해야 합니다.</p>
+        <a class="btn btn-primary auth-gate-btn" id="authGdriveLoginBtn" href="/api/gdrive/oauth/login">Google로 로그인</a>
+      </div>
+    </div>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <span class="sidebar-brand-mark">PC</span>
+          <div>
+            <div class="sidebar-brand-title">Inspection Bot</div>
+            <div class="sidebar-brand-sub">올더뮤 검수 v3</div>
+          </div>
+        </div>
+        <button type="button" class="new-inspection-btn" id="btnNewInspection">+ New Inspection</button>
+        <nav class="sidebar-nav" aria-label="main">
+          <a href="#" data-view="inspect" class="nav-item active">소재 검수</a>
+          <a href="#" data-view="copywriter" class="nav-item">카피 창작</a>
+          <a href="#" data-view="history" class="nav-item">히스토리 탐색</a>
+          <a href="#" data-view="terms" class="nav-item">용어 해석</a>
+          <a href="#" data-view="manual" class="nav-item">수동 적재</a>
+          <a href="#" data-view="admin" class="nav-item">슬랙 승인 대기</a>
+        </nav>
+        <div class="sidebar-footer">
+          <span class="nav-item nav-item-muted">Settings</span>
+          <span class="nav-item nav-item-muted">Support</span>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="content-header">
+          <h1 id="viewTitle">소재 검수</h1>
+          <div class="user-pill">올더뮤</div>
+        </header>
+
+        <section id="view-inspect" class="view view-active">
+          <div class="view-body chat-pane">
+            <div class="chat-log" id="chatLog"></div>
+          </div>
+          <div class="composer glass">
+            <div class="composer-inner">
+              <input id="imageInput" type="file" class="file-input" multiple accept="image/*,video/*" />
+              <div class="composer-main">
+                <div class="gdrive-composer-status" id="gdriveComposerStatus" aria-live="polite"></div>
+                <div id="imagePreview" class="image-preview hidden"></div>
+                <textarea
+                  id="textInput"
+                  rows="2"
+                  placeholder="구글 드라이브 URL 입력 또는 파일을 선택하세요 (Enter 전송, Shift+Enter 줄바꿈)"
+                ></textarea>
+              </div>
+              <div class="composer-send-actions">
+                <button type="button" id="sendBtn" class="btn btn-primary">전송</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-copywriter" class="view">
+          <div class="view-body chat-pane">
+            <div class="chat-log" id="copywriterChatLog"></div>
+          </div>
+          <div class="composer glass">
+            <div class="composer-inner">
+              <div class="composer-main composer-main-full">
+                <textarea
+                  id="copywriterInput"
+                  rows="2"
+                  placeholder="카피 요청을 입력하세요…"
+                ></textarea>
+              </div>
+              <button type="button" id="copywriterSendBtn" class="btn btn-primary">생성</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-history" class="view">
+          <div class="view-toolbar history-toolbar">
+            <div class="history-toolbar-top">
+              <div class="history-subtabs" role="tablist" aria-label="히스토리 하위 탭">
+                <button type="button" class="subtab-pill active" data-subtab="history" role="tab">히스토리</button>
+                <button type="button" class="subtab-pill" data-subtab="raw" role="tab">원본 메시지</button>
+              </div>
+              <button type="button" class="btn btn-ghost btn-sm" id="historyRefreshBtn">새로고침</button>
+            </div>
+            <div class="history-toolbar-filters">
+              <div class="category-tabs-wrap" id="historyCategoryToolbar">
+                <div class="category-tabs" id="historyCategoryTabs" role="tablist" aria-label="히스토리 카테고리">
+                  <button type="button" class="category-tab active" data-category="" role="tab">전체</button>
+                  <button type="button" class="category-tab" data-category="크리에이티브" role="tab">크리에이티브</button>
+                  <button type="button" class="category-tab" data-category="프로모션" role="tab">프로모션</button>
+                  <button type="button" class="category-tab" data-category="CRM" role="tab">CRM</button>
+                  <button type="button" class="category-tab" data-category="브랜딩" role="tab">브랜딩</button>
+                  <button type="button" class="category-tab" data-category="퍼포먼스" role="tab">퍼포먼스</button>
+                  <button type="button" class="category-tab" data-category="기타" role="tab">기타</button>
+                  <button type="button" class="category-tab" data-category="미분류" role="tab">미분류</button>
+                </div>
+              </div>
+              <div class="filter-pills" id="historyFilters">
+                <button type="button" class="filter-pill active" data-status="">전체</button>
+                <button type="button" class="filter-pill" data-status="활성">활성</button>
+                <button type="button" class="filter-pill" data-status="변경됨">변경됨</button>
+                <button type="button" class="filter-pill" data-status="폐기">폐기</button>
+              </div>
+              <div class="filter-pills hidden" id="rawFilters">
+                <button type="button" class="filter-pill active" data-raw-kind="">전체</button>
+                <button type="button" class="filter-pill" data-raw-kind="feedback">피드백</button>
+                <button type="button" class="filter-pill" data-raw-kind="not_feedback">비피드백</button>
+                <button type="button" class="filter-pill" data-raw-kind="bot">봇</button>
+              </div>
+              <div class="raw-filters-extra hidden" id="rawFiltersExtra" aria-label="원본 메시지 추가 필터">
+                <input id="rawSearch" type="search" placeholder="키워드" autocomplete="off" />
+                <input id="rawAuthor" type="text" placeholder="user_id (선택)" autocomplete="off" />
+                <label class="raw-filter-check"><input type="checkbox" id="rawHasFiles" /> 첨부있음</label>
+                <select id="rawOrder" aria-label="정렬">
+                  <option value="desc">최신순</option>
+                  <option value="asc">오래된순</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="view-body split-history">
+            <div class="history-split-left">
+              <div class="history-list" id="historyList"></div>
+              <div class="history-list hidden" id="rawMessageList"></div>
+            </div>
+            <div class="history-chat glass" id="historyChatPanel">
+              <div class="history-chat-stats" id="historyChatStats" aria-live="polite"></div>
+              <div class="history-chat-label" id="historyChatLabel">히스토리에 질문</div>
+              <div class="chat-log history-chat-log" id="historyChatLog"></div>
+              <div class="composer-row-inline">
+                <textarea id="historyQueryInput" rows="2" placeholder="예: 배경 관련 피드백 뭐였어?"></textarea>
+                <button type="button" id="historyQueryBtn" class="btn btn-primary btn-sm">질문</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-terms" class="view">
+          <div class="view-body chat-pane">
+            <div class="chat-log" id="termsChatLog"></div>
+          </div>
+          <div class="composer glass">
+            <div class="composer-inner">
+              <div class="composer-main composer-main-full">
+                <textarea id="termsInput" rows="2" placeholder="용어를 입력하거나 질문하세요…"></textarea>
+              </div>
+              <button type="button" id="termsSendBtn" class="btn btn-primary">전송</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-manual" class="view">
+          <div class="view-toolbar">
+            <h2 class="view-title">수동 히스토리 적재</h2>
+          </div>
+          <div class="view-body manual-view-body">
+            <div class="manual-form glass">
+              <p class="manual-help">
+                슬랙 외 채널(메일/회의/메모)에서 받은 피드백을 여기에 붙여넣으면 <strong>히스토리에 바로 적재</strong>됩니다.
+                Google Sheets·Docs·Slides 링크를 본문에 그대로 포함하면 적재 시 자동으로 내용을 읽어 refine에 반영합니다
+                (Google 로그인 필요, 문서당 최대 10,000자, 최대 5개).
+                refine 과정에서 5~30초 소요될 수 있습니다.
+              </p>
+
+              <label class="manual-field">
+                <span class="manual-field-label">본문 원문 <em>*</em></span>
+                <textarea
+                  id="manualText"
+                  rows="12"
+                  placeholder="예) 헤더 카피는 반드시 20자 이내. 자세한 규칙은 https://docs.google.com/spreadsheets/d/..."
+                ></textarea>
+              </label>
+
+              <div class="manual-form-row">
+                <label class="manual-field">
+                  <span class="manual-field-label">작성자 (선택)</span>
+                  <input id="manualAuthor" type="text" placeholder="기본: Google 로그인 사용자 이름" autocomplete="off" />
+                </label>
+                <label class="manual-field">
+                  <span class="manual-field-label">카테고리 힌트 (선택)</span>
+                  <select id="manualCategory">
+                    <option value="">자동 분류</option>
+                    <option value="크리에이티브">크리에이티브</option>
+                    <option value="프로모션">프로모션</option>
+                    <option value="CRM">CRM</option>
+                    <option value="브랜딩">브랜딩</option>
+                    <option value="퍼포먼스">퍼포먼스</option>
+                    <option value="기타">기타</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="manual-actions">
+                <button type="button" id="manualSubmitBtn" class="btn btn-primary">히스토리에 적재</button>
+                <button type="button" id="manualGoHistoryBtn" class="btn btn-ghost hidden">히스토리 탐색으로 이동</button>
+                <span id="manualStatus" class="admin-status"></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-admin" class="view">
+          <div class="view-toolbar">
+            <span class="admin-status" id="adminStatus">—</span>
+            <button type="button" class="btn btn-ghost btn-sm" id="adminRefreshBtn">새로고침</button>
+          </div>
+          <div class="admin-filters" id="adminFilters">
+            <input id="adminSearch" type="search" placeholder="키워드 — 본문 검색" autocomplete="off" />
+            <input
+              id="adminAuthor"
+              type="text"
+              placeholder="작성자"
+              autocomplete="off"
+            />
+            <div class="filter-pills" id="adminStatusFilters">
+              <button type="button" class="filter-pill active" data-status="대기중">대기중</button>
+              <button type="button" class="filter-pill" data-status="처리중">처리중</button>
+              <button type="button" class="filter-pill" data-status="">전체</button>
+            </div>
+            <select id="adminOrder" aria-label="정렬">
+              <option value="desc">최신순</option>
+              <option value="asc">오래된순</option>
+            </select>
+          </div>
+          <div class="view-body">
+            <div class="admin-cards" id="adminCards"></div>
+            <button type="button" id="adminLoadMoreBtn" class="hidden">더 보기</button>
+          </div>
+        </section>
+      </main>
+
+      <aside class="context-panel glass" id="contextPanel">
+        <div class="context-header">
+          <h2 class="context-title" id="contextTitle">컨텍스트</h2>
+        </div>
+        <div class="context-body" id="contextBody"></div>
+      </aside>
+    </div>
+
+    <div class="modal-overlay hidden" id="historyModal" role="dialog" aria-modal="true" aria-labelledby="historyModalTitle">
+      <div class="modal-card">
+        <header class="modal-header">
+          <div class="modal-header-text">
+            <h2 class="modal-title" id="historyModalTitle"></h2>
+            <span class="modal-badge" id="historyModalBadge"></span>
+          </div>
+          <button type="button" class="modal-close" id="historyModalClose" aria-label="닫기">×</button>
+        </header>
+        <div class="modal-body" id="historyModalBody"></div>
+        <footer class="modal-footer modal-footer-history" id="historyModalFooter">
+          <div class="modal-meta-line" id="historyModalMeta"></div>
+          <div class="modal-actions" id="historyModalActionsRead">
+            <button type="button" class="btn btn-ghost btn-sm" id="historyModalEdit">수정</button>
+            <button type="button" class="btn btn-ghost btn-sm modal-btn-danger" id="historyModalDelete">삭제</button>
+          </div>
+          <div class="modal-actions hidden" id="historyModalActionsEdit">
+            <button type="button" class="btn btn-primary btn-sm" id="historyModalSave">저장</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="historyModalCancel">취소</button>
+          </div>
+        </footer>
+      </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="adminModal" role="dialog" aria-modal="true" aria-labelledby="adminModalTitle">
+      <div class="modal-card">
+        <header class="modal-header">
+          <div class="modal-header-text">
+            <h2 class="modal-title" id="adminModalTitle"></h2>
+          </div>
+          <button type="button" class="modal-close" id="adminModalClose" aria-label="닫기">×</button>
+        </header>
+        <div class="modal-body" id="adminModalBody"></div>
+        <footer class="modal-footer modal-footer-history" id="adminModalFooter">
+          <div class="modal-meta-line" id="adminModalMeta"></div>
+          <div class="admin-modal-category">
+            <label for="adminModalCategory">적재 카테고리</label>
+            <select id="adminModalCategory">
+              <option value="크리에이티브">크리에이티브</option>
+              <option value="프로모션">프로모션</option>
+              <option value="CRM">CRM</option>
+              <option value="브랜딩">브랜딩</option>
+              <option value="퍼포먼스">퍼포먼스</option>
+              <option value="기타">기타</option>
+              <option value="미분류">미분류</option>
+            </select>
+          </div>
+          <div class="admin-warn hidden" id="adminModalConflict"></div>
+          <div class="modal-actions" id="adminModalActions"></div>
+        </footer>
+      </div>
+    </div>
+
+    <div id="gdriveAuthModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="gdriveAuthModalTitle">
+      <div class="modal-card gdrive-auth-card">
+        <h3 class="modal-title" id="gdriveAuthModalTitle">Google Drive 로그인 필요</h3>
+        <p id="gdriveAuthModalMsg" class="modal-body" style="margin-top:8px">
+          이 히스토리에 Google 문서 링크가 포함되어 있습니다. refine을 위해 Google 로그인이 필요합니다.
+        </p>
+        <div class="modal-actions" style="margin-top:16px">
+          <button type="button" id="gdriveAuthLoginBtn" class="btn btn-primary btn-sm">Google 로그인</button>
+          <button type="button" id="gdriveAuthCancelBtn" class="btn btn-ghost btn-sm">취소</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="lightbox-overlay hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="이미지 보기">
+      <img id="lightboxImg" alt="" />
+      <button type="button" class="lightbox-close" id="lightboxClose" aria-label="닫기">×</button>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
