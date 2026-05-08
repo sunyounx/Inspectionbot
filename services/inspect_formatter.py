@@ -3,8 +3,20 @@ from __future__ import annotations
 from typing import Any
 
 
+def _strip(v: Any) -> str:
+    return str(v or "").strip()
+
+
+def _short(text: str, limit: int = 100) -> str:
+    """긴 detail/suggestion을 한 줄 길이로 클램프."""
+    s = " ".join(_strip(text).split())
+    if len(s) <= limit:
+        return s
+    return s[: limit - 1].rstrip() + "…"
+
+
 def format_inspection_results(results: list[Any], image_count: int) -> str:
-    """JSON 결과 N개 → 통일된 마크다운."""
+    """JSON 결과 N개 → 3섹션(✅ 충족 / ❌ 미충족 / 💡 제안) 마크다운."""
     greeting = (
         "안녕하세요! 올더뮤 광고 소재 1차 검수 어시스턴트입니다.\n"
         f"요청하신 {image_count}건의 소재에 대한 검수 결과를 전달합니다.\n\n---\n\n"
@@ -21,76 +33,87 @@ def format_inspection_results(results: list[Any], image_count: int) -> str:
             continue
 
         md = f"### 이미지 {i + 1}\n"
-        md += f"파일명: {str(r.get('file_name', '')).strip()}\n\n"
+        fname = _strip(r.get("file_name"))
+        if fname:
+            md += f"파일명: {fname}\n"
 
-        # ✅ 충족 항목
-        md += "✅ 충족 항목\n"
-        satisfied = r.get("satisfied") or []
-        if satisfied:
-            for s in satisfied:
-                try:
-                    md += f"- **{s['item']}**: {s['detail']}\n"
-                except Exception:
-                    continue
-        else:
-            md += "- 해당 없음\n"
+        # ✅ 충족 — 키워드만 한 줄
+        sat_kw: list[str] = []
+        for s in r.get("satisfied") or []:
+            if not isinstance(s, dict):
+                continue
+            item = _strip(s.get("item"))
+            if item:
+                sat_kw.append(item)
+        if sat_kw:
+            md += "\n✅ 충족\n" + " / ".join(sat_kw) + "\n"
 
-        # ⚠️ 확인 필요
-        md += "\n⚠️ 확인 필요 항목\n"
-        checks = r.get("check_needed") or []
-        if checks:
-            for c in checks:
-                try:
-                    md += f"- **{c['item']}**: {c['detail']}\n"
-                    sug = str(c.get("suggestion", "")).strip()
-                    if sug:
-                        md += f"  → {sug}\n"
-                except Exception:
-                    continue
-        else:
-            md += "- 해당 없음\n"
+        # ❌ 미충족 — check_needed + issues + compliance(violation/warning) 키워드
+        miss_kw: list[str] = []
+        for c in r.get("check_needed") or []:
+            if isinstance(c, dict):
+                item = _strip(c.get("item"))
+                if item:
+                    miss_kw.append(item)
+        for iss in r.get("issues") or []:
+            if isinstance(iss, dict):
+                item = _strip(iss.get("item"))
+                if item:
+                    miss_kw.append(item)
+        for c in r.get("compliance") or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("severity") not in ("violation", "warning"):
+                continue
+            item = _strip(c.get("item"))
+            if item:
+                # 컴플 항목은 인용 형태로 표기해 시각적으로 구분
+                miss_kw.append(f'"{item}"' if not item.startswith('"') else item)
+        if miss_kw:
+            md += "\n❌ 미충족\n" + " / ".join(miss_kw) + "\n"
 
-        # ❌ 명확한 이슈
-        issues = r.get("issues") or []
-        if issues:
-            md += "\n❌ 명확한 이슈\n"
-            for iss in issues:
-                try:
-                    md += f"- **{iss['item']}**: {iss['detail']}\n"
-                    sug = str(iss.get("suggestion", "")).strip()
-                    if sug:
-                        md += f"  → {sug}\n"
-                except Exception:
-                    continue
-
-        # 🔒 컴플라이언스
-        md += "\n🔒 컴플라이언스 (일반식품)\n"
-        comps = r.get("compliance") or []
-        if comps:
-            for c in comps:
-                try:
-                    sev = c.get("severity")
-                    icon = "❌" if sev == "violation" else "⚠️" if sev == "warning" else "✅"
-                    md += f"- {icon} **{c['item']}**: {c['detail']}\n"
-                    alt = str(c.get("alternative", "")).strip()
-                    if alt:
-                        md += f"  → 대체 제안: {alt}\n"
-                except Exception:
-                    continue
-        else:
-            md += "- 해당 없음\n"
-
-        # 💡 추가 제안
-        sugs = r.get("suggestions") or []
-        if sugs:
-            md += "\n💡 추가 제안\n"
-            for s in sugs:
-                try:
-                    md += f"- {s['detail']}\n"
-                except Exception:
-                    continue
+        # 💡 제안 — 항목별 한 줄 (현재→제안 화살표는 모델이 suggestion에 담아준다)
+        proposals: list[str] = []
+        for c in r.get("check_needed") or []:
+            if not isinstance(c, dict):
+                continue
+            item = _strip(c.get("item"))
+            sug = _short(c.get("suggestion"))
+            if not (item or sug):
+                continue
+            line = f"- {item}: {sug}" if (item and sug) else f"- {item or sug}"
+            line += " (테스트 의도면 패스)"
+            proposals.append(line)
+        for iss in r.get("issues") or []:
+            if not isinstance(iss, dict):
+                continue
+            item = _strip(iss.get("item"))
+            sug = _short(iss.get("suggestion"))
+            if not (item or sug):
+                continue
+            proposals.append(f"- {item}: {sug}" if (item and sug) else f"- {item or sug}")
+        for c in r.get("compliance") or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("severity") not in ("violation", "warning"):
+                continue
+            item = _strip(c.get("item"))
+            alt = _short(c.get("alternative"))
+            if not (item or alt):
+                continue
+            if item and alt:
+                proposals.append(f'- "{item}" → {alt}')
+            else:
+                proposals.append(f"- {item or alt}")
+        for s in r.get("suggestions") or []:
+            if not isinstance(s, dict):
+                continue
+            detail = _short(s.get("detail"))
+            if detail:
+                proposals.append(f"- {detail}")
+        if proposals:
+            md += "\n💡 제안\n" + "\n".join(proposals) + "\n"
 
         parts.append(md.rstrip())
 
     return greeting + "\n---\n\n".join(parts)
-

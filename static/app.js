@@ -256,11 +256,24 @@ function addConditionPickerBubble(logEl, originalMessage, rulesChecked) {
 
   confirmBtn.addEventListener("click", async () => {
     if (confirmBtn.disabled) return;
+    // originalMessage가 비어 있으면(탭 진입 시 디폴트 picker) 입력창 값을 그때 읽는다.
+    const liveInput = (copywriterInput?.value || "").trim();
+    const userMessage = (originalMessage && originalMessage.trim()) || liveInput;
+    if (!userMessage) {
+      addBubble(logEl, "bot", "카피 요청을 입력창에 적고 다시 [생성]을 눌러주세요.");
+      return;
+    }
     confirmBtn.disabled = true;
     copyConditions.extra = extraField.value || "";
     const prefix = buildConditionPrefixExplicit();
-    const fullMessage = prefix + originalMessage;
-    addBubble(logEl, "user", originalMessage);
+    const fullMessage = prefix + userMessage;
+    if (!originalMessage || !originalMessage.trim()) {
+      // 디폴트 picker 경로: 사용자가 아직 user 버블을 띄운 적 없으니 여기서 띄우고 입력창을 비운다.
+      addBubble(logEl, "user", userMessage);
+      if (copywriterInput) copywriterInput.value = "";
+    } else {
+      addBubble(logEl, "user", userMessage);
+    }
     addBubble(logEl, "bot", "카피를 생성 중입니다...", "잠시만 기다려주세요");
     try {
       const res = await fetch("/api/inspect", {
@@ -271,7 +284,7 @@ function addConditionPickerBubble(logEl, originalMessage, rulesChecked) {
           mode: "카피창작",
         }),
       });
-      await handleCopywriterInspectResult(res, logEl, originalMessage);
+      await handleCopywriterInspectResult(res, logEl, userMessage);
     } catch (e) {
       removeLastBubble(logEl);
       addBubble(logEl, "bot", `에러: ${e}`);
@@ -279,6 +292,13 @@ function addConditionPickerBubble(logEl, originalMessage, rulesChecked) {
       confirmBtn.disabled = false;
     }
   });
+}
+
+function ensureCopywriterDefaultPicker() {
+  if (!copywriterChatLog) return;
+  // 이미 메시지/피커가 떠 있으면 중복 표시하지 않음
+  if (copywriterChatLog.children.length > 0) return;
+  addConditionPickerBubble(copywriterChatLog, "");
 }
 
 const adminCards = document.getElementById("adminCards");
@@ -1033,6 +1053,10 @@ function switchView(name) {
   if (name === "history") {
     if (historySubTab === "raw") loadRawMessages();
     else loadHistory();
+  }
+
+  if (name === "copywriter") {
+    ensureCopywriterDefaultPicker();
   }
 
   updateContextPanel();
