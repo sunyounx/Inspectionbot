@@ -1,22 +1,37 @@
 from __future__ import annotations
 
+import re
 from typing import Any
+
+_LEADING_BULLET_RE = re.compile(r"^\s*[-*•]+\s*")
+_MAX_PROPOSALS = 2
 
 
 def _strip(v: Any) -> str:
     return str(v or "").strip()
 
 
-def _short(text: str, limit: int = 100) -> str:
+def _strip_bullet(text: Any) -> str:
+    """모델이 넣은 선행 '- ', '* ', '• ' 등을 제거."""
+    s = _strip(text)
+    while True:
+        new_s = _LEADING_BULLET_RE.sub("", s, count=1)
+        if new_s == s:
+            return s
+        s = new_s
+
+
+def _short(text: Any, limit: int = 120) -> str:
     """긴 detail/suggestion을 한 줄 길이로 클램프."""
-    s = " ".join(_strip(text).split())
+    s = " ".join(_strip_bullet(text).split())
     if len(s) <= limit:
         return s
     return s[: limit - 1].rstrip() + "…"
 
 
 def format_inspection_results(results: list[Any], image_count: int) -> str:
-    """JSON 결과 N개 → 3섹션(✅ 충족 / ❌ 미충족 / 💡 제안) 마크다운."""
+    """JSON 결과 N개 → 3섹션(✅ 충족 / ❌ 미충족 / 💡 제안) 마크다운.
+    💡 제안은 우선순위(issues > check_needed > suggestions > 컴플)로 정렬한 뒤 최대 2개."""
     greeting = (
         "안녕하세요! 올더뮤 광고 소재 1차 검수 어시스턴트입니다.\n"
         f"요청하신 {image_count}건의 소재에 대한 검수 결과를 전달합니다.\n\n---\n\n"
@@ -67,31 +82,12 @@ def format_inspection_results(results: list[Any], image_count: int) -> str:
                 continue
             item = _strip(c.get("item"))
             if item:
-                # 컴플 항목은 인용 형태로 표기해 시각적으로 구분
                 miss_kw.append(f'"{item}"' if not item.startswith('"') else item)
         if miss_kw:
             md += "\n❌ 미충족\n" + " / ".join(miss_kw) + "\n"
 
-        # 💡 제안 — 항목별 한 줄 (현재→제안 화살표는 모델이 suggestion에 담아준다)
-        proposals: list[str] = []
-        for c in r.get("check_needed") or []:
-            if not isinstance(c, dict):
-                continue
-            item = _strip(c.get("item"))
-            sug = _short(c.get("suggestion"))
-            if not (item or sug):
-                continue
-            line = f"- {item}: {sug}" if (item and sug) else f"- {item or sug}"
-            line += " (테스트 의도면 패스)"
-            proposals.append(line)
-        for iss in r.get("issues") or []:
-            if not isinstance(iss, dict):
-                continue
-            item = _strip(iss.get("item"))
-            sug = _short(iss.get("suggestion"))
-            if not (item or sug):
-                continue
-            proposals.append(f"- {item}: {sug}" if (item and sug) else f"- {item or sug}")
+        # 💡 제안 — 우선순위별로 모은 뒤 최대 2개
+        compliance_props: list[str] = []
         for c in r.get("compliance") or []:
             if not isinstance(c, dict):
                 continue
@@ -99,18 +95,41 @@ def format_inspection_results(results: list[Any], image_count: int) -> str:
                 continue
             item = _strip(c.get("item"))
             alt = _short(c.get("alternative"))
-            if not (item or alt):
+            if not alt:
                 continue
-            if item and alt:
-                proposals.append(f'- "{item}" → {alt}')
-            else:
-                proposals.append(f"- {item or alt}")
+            compliance_props.append(f'- "{item}" → {alt}' if item else f"- {alt}")
+
+        issue_props: list[str] = []
+        for iss in r.get("issues") or []:
+            if not isinstance(iss, dict):
+                continue
+            item = _strip(iss.get("item"))
+            sug = _short(iss.get("suggestion"))
+            if not sug:
+                continue
+            issue_props.append(f"- {item}: {sug}" if item else f"- {sug}")
+
+        check_props: list[str] = []
+        for c in r.get("check_needed") or []:
+            if not isinstance(c, dict):
+                continue
+            item = _strip(c.get("item"))
+            sug = _short(c.get("suggestion"))
+            if not sug:
+                continue
+            line = f"- {item}: {sug}" if item else f"- {sug}"
+            line += " (테스트 의도면 패스)"
+            check_props.append(line)
+
+        free_props: list[str] = []
         for s in r.get("suggestions") or []:
             if not isinstance(s, dict):
                 continue
             detail = _short(s.get("detail"))
             if detail:
-                proposals.append(f"- {detail}")
+                free_props.append(f"- {detail}")
+
+        proposals = (issue_props + check_props + free_props + compliance_props)[:_MAX_PROPOSALS]
         if proposals:
             md += "\n💡 제안\n" + "\n".join(proposals) + "\n"
 
