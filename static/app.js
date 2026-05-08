@@ -301,7 +301,62 @@ function ensureCopywriterDefaultPicker() {
   addConditionPickerBubble(copywriterChatLog, "");
 }
 
-const adminCards = document.getElementById("adminCards");
+const adminCardsSlack = document.getElementById("adminCardsSlack");
+const adminCardsFigma = document.getElementById("adminCardsFigma");
+const adminCountSlack = document.getElementById("adminCountSlack");
+const adminCountFigma = document.getElementById("adminCountFigma");
+
+function isFigmaPending(item) {
+  return ((item && item.source_ts) || "").startsWith("figma:");
+}
+
+function renderAdminColumns(items) {
+  if (adminCardsSlack) adminCardsSlack.innerHTML = "";
+  if (adminCardsFigma) adminCardsFigma.innerHTML = "";
+
+  const slackItems = items.filter((x) => !isFigmaPending(x));
+  const figmaItems = items.filter(isFigmaPending);
+
+  if (adminCountSlack) adminCountSlack.textContent = String(slackItems.length);
+  if (adminCountFigma) adminCountFigma.textContent = String(figmaItems.length);
+
+  if (adminCardsSlack) {
+    if (!slackItems.length) {
+      adminCardsSlack.appendChild(el("div", { className: "history-card", text: "대기중인 Slack 항목이 없습니다." }));
+    } else {
+      slackItems.forEach((item) => adminCardsSlack.appendChild(renderAdminCard(item)));
+    }
+  }
+
+  if (adminCardsFigma) {
+    if (!figmaItems.length) {
+      adminCardsFigma.appendChild(el("div", { className: "history-card", text: "대기중인 Figma 항목이 없습니다." }));
+    } else {
+      figmaItems.forEach((item) => adminCardsFigma.appendChild(renderAdminCard(item)));
+    }
+  }
+}
+
+function appendAdminColumns(items) {
+  const slackItems = items.filter((x) => !isFigmaPending(x));
+  const figmaItems = items.filter(isFigmaPending);
+
+  if (adminCardsSlack && slackItems.length) {
+    slackItems.forEach((item) => adminCardsSlack.appendChild(renderAdminCard(item)));
+  }
+  if (adminCardsFigma && figmaItems.length) {
+    figmaItems.forEach((item) => adminCardsFigma.appendChild(renderAdminCard(item)));
+  }
+
+  if (adminCountSlack) {
+    const total = adminListCache.filter((x) => !isFigmaPending(x)).length;
+    adminCountSlack.textContent = String(total);
+  }
+  if (adminCountFigma) {
+    const total = adminListCache.filter(isFigmaPending).length;
+    adminCountFigma.textContent = String(total);
+  }
+}
 const adminStatus = document.getElementById("adminStatus");
 const adminRefreshBtn = document.getElementById("adminRefreshBtn");
 const adminSearchInput = document.getElementById("adminSearch");
@@ -2595,7 +2650,8 @@ async function loadAdmin({ append = false } = {}) {
     if (!append) {
       adminOffset = 0;
       adminListCache = [];
-      if (adminCards) adminCards.innerHTML = "";
+      if (adminCardsSlack) adminCardsSlack.innerHTML = "";
+      if (adminCardsFigma) adminCardsFigma.innerHTML = "";
     }
     if (adminStatus) adminStatus.textContent = "불러오는 중...";
     const q = new URLSearchParams();
@@ -2617,14 +2673,9 @@ async function loadAdmin({ append = false } = {}) {
     adminListCache = append ? adminListCache.concat(items) : items;
 
     if (append) {
-      items.forEach((item) => adminCards.appendChild(renderAdminCard(item)));
-    } else if (adminCards) {
-      adminCards.innerHTML = "";
-      if (!adminListCache.length) {
-        adminCards.appendChild(el("div", { className: "history-card", text: "대기중인 항목이 없습니다." }));
-      } else {
-        adminListCache.forEach((item) => adminCards.appendChild(renderAdminCard(item)));
-      }
+      appendAdminColumns(items);
+    } else {
+      renderAdminColumns(adminListCache);
     }
 
     adminOffset += items.length;

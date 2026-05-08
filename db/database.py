@@ -458,6 +458,22 @@ def pending_source_ts_ever_seen(source_ts: str) -> bool:
             return cur.fetchone() is not None
 
 
+def get_latest_pending_for_source_ts(source_ts: str) -> dict[str, Any] | None:
+    """동일 source_ts의 가장 최근 pending(상태 무관). Figma 폴링이 동일 스레드 재insert를 피하기 위해
+    기존 pending의 full_text와 현재 full_text를 비교하는 데 사용."""
+    st = (source_ts or "").strip()
+    if not st:
+        return None
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM pending_approvals WHERE source_ts = %s ORDER BY id DESC LIMIT 1",
+                (st,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 def insert_figma_comment_image(
     *,
     file_key: str,

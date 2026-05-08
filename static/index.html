@@ -247,7 +247,22 @@
             </select>
           </div>
           <div class="view-body">
-            <div class="admin-cards" id="adminCards"></div>
+            <div class="admin-split">
+              <section class="admin-column">
+                <div class="admin-column-header">
+                  <span class="admin-column-title">💬 Slack</span>
+                  <span class="admin-column-count" id="adminCountSlack">0</span>
+                </div>
+                <div class="admin-cards" id="adminCardsSlack"></div>
+              </section>
+              <section class="admin-column">
+                <div class="admin-column-header">
+                  <span class="admin-column-title">🎨 Figma</span>
+                  <span class="admin-column-count" id="adminCountFigma">0</span>
+                </div>
+                <div class="admin-cards" id="adminCardsFigma"></div>
+              </section>
+            </div>
             <button type="button" id="adminLoadMoreBtn" class="hidden">더 보기</button>
           </div>
         </section>

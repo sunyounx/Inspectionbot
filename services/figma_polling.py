@@ -17,6 +17,7 @@ from typing import Any
 from db.database import (
     absorb_open_pendings_for_thread,
     get_figma_comment_image,
+    get_latest_pending_for_source_ts,
     has_open_pending_for_source_ts,
     insert_figma_comment_image,
     insert_message_file,
@@ -201,7 +202,7 @@ async def _process_file(file_key: str, advertiser_handles: set[str]) -> int:
 
         source_ts = f"figma:{file_key}:{root_id}"
 
-        # 승인/폐기로 닫힌 스레드는 다시 적재하지 않음. (대기중 pending이 있으면 재누적 가능)
+        # 승인/폐기로 닫힌 스레드는 다시 적재하지 않음.
         if pending_source_ts_ever_seen(source_ts) and not has_open_pending_for_source_ts(source_ts):
             continue
 
@@ -209,6 +210,11 @@ async def _process_file(file_key: str, advertiser_handles: set[str]) -> int:
 
         full_text = _format_thread_full_text(sorted_thread)
         if not full_text:
+            continue
+
+        # 변경 없으면 skip — 기존 pending(있으면)의 full_text와 동일하면 폴링 cycle마다 재insert 방지
+        existing = get_latest_pending_for_source_ts(source_ts)
+        if existing and (existing.get("full_text") or "") == full_text:
             continue
 
         # 이미지 + raw/message_files row 보장

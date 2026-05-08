@@ -117,6 +117,8 @@ async def _process_potential_feedback(
         thread_replies = get_raw_thread_replies(pt)
         reply_blocks: list[str] = []
         for r in thread_replies:
+            if r.get("is_bot"):
+                continue
             rtext = (r.get("text") or "").strip()
             if rtext:
                 reply_blocks.append(rtext)
