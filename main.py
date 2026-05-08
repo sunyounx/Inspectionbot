@@ -9,6 +9,7 @@ from routers import copybank
 from routers import figma
 from routers import files
 from routers import gdrive, history, inspect, manual
+from services.figma_polling import figma_poll_loop
 from services.polling import poll_slack_loop
 
 app = FastAPI(title="올더뮤 검수봇 v3")
@@ -24,13 +25,19 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     init_db()
-    # Slack에는 절대 전송하지 않고, 읽기+DB 적재만 수행
+    # Slack/Figma 모두 읽기+DB 적재만 수행 (외부에 메시지 전송 없음)
     try:
         import asyncio
 
         asyncio.create_task(poll_slack_loop())
     except Exception as e:
-        print(f"[startup] failed to start poll loop: {e}")
+        print(f"[startup] failed to start slack poll loop: {e}")
+    try:
+        import asyncio
+
+        asyncio.create_task(figma_poll_loop())
+    except Exception as e:
+        print(f"[startup] failed to start figma poll loop: {e}")
 
 
 app.include_router(approval.router)

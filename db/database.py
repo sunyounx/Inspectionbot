@@ -443,6 +443,63 @@ def has_open_pending_for_source_ts(source_ts: str) -> bool:
             return cur.fetchone() is not None
 
 
+def pending_source_ts_ever_seen(source_ts: str) -> bool:
+    """동일 source_ts가 어떤 상태(승인/폐기/흡수 포함)로든 한 번이라도 적재됐으면 True.
+    Figma 댓글 폴링에서 동일 댓글 재적재 방지 용도."""
+    st = (source_ts or "").strip()
+    if not st:
+        return False
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pending_approvals WHERE source_ts = %s LIMIT 1",
+                (st,),
+            )
+            return cur.fetchone() is not None
+
+
+def insert_figma_comment_image(
+    *,
+    file_key: str,
+    comment_id: str,
+    node_id: str | None,
+    file_name: str | None,
+    mime_type: str,
+    image_data: bytes,
+) -> None:
+    fk = (file_key or "").strip()
+    cid = (comment_id or "").strip()
+    if not fk or not cid or not image_data:
+        return
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO figma_comment_images
+                (file_key, comment_id, node_id, file_name, mime_type, image_data)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (file_key, comment_id) DO NOTHING
+                """,
+                (fk, cid, node_id, file_name, mime_type or "image/png", image_data),
+            )
+        conn.commit()
+
+
+def get_figma_comment_image(file_key: str, comment_id: str) -> dict[str, Any] | None:
+    fk = (file_key or "").strip()
+    cid = (comment_id or "").strip()
+    if not fk or not cid:
+        return None
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM figma_comment_images WHERE file_key = %s AND comment_id = %s LIMIT 1",
+                (fk, cid),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 def update_pending_status(id: int, status: str) -> None:
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -636,6 +693,29 @@ def absorb_parent_pending_if_any(parent_ts: str) -> None:
                   AND status = %s
                 """,
                 ("흡수됨", pt, "대기중"),
+            )
+        conn.commit()
+
+
+def absorb_open_pendings_for_thread(parent_ts: str) -> None:
+    """스레드(부모 + 모든 댓글)에 속한 '대기중' pending을 모두 '흡수됨'으로 변경.
+    같은 스레드의 새 댓글이 들어와 누적 full_text로 신규 pending을 적재하기 직전에 호출."""
+    pt = (parent_ts or "").strip()
+    if not pt:
+        return
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE pending_approvals
+                SET status = %s
+                WHERE status = %s
+                  AND (
+                    (source_ts = %s AND parent_ts IS NULL)
+                    OR parent_ts = %s
+                  )
+                """,
+                ("흡수됨", "대기중", pt, pt),
             )
         conn.commit()
 

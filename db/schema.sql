@@ -184,6 +184,18 @@ CREATE TABLE IF NOT EXISTS gdrive_oauth_tokens (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS figma_comment_images (
+    id SERIAL PRIMARY KEY,
+    file_key TEXT NOT NULL,
+    comment_id TEXT NOT NULL,
+    node_id TEXT,
+    file_name TEXT,
+    mime_type TEXT NOT NULL DEFAULT 'image/png',
+    image_data BYTEA NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(file_key, comment_id)
+);
+
 CREATE TABLE IF NOT EXISTS copybank (
     id SERIAL PRIMARY KEY,
     category TEXT,

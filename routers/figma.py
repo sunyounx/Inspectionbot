@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from db.database import (
     get_active_history,
+    get_figma_comment_image,
     get_figma_inspection_by_id,
     get_figma_inspection_thumbnail,
     get_guidelines,
@@ -260,6 +261,23 @@ def figma_inspection_image_public(figma_inspection_id: int, image_index: int):
     blob, mt = row
     return Response(
         content=blob,
+        media_type=mt,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@router.get("/figma/comment-image/{file_key}/{comment_id}")
+def figma_comment_image(file_key: str, comment_id: str):
+    """광고주 Figma 댓글이 붙은 노드 PNG 서빙. figma_comment_images 테이블에서 조회."""
+    row = get_figma_comment_image(file_key, comment_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="figma comment image not found")
+    blob = row.get("image_data")
+    if not blob:
+        raise HTTPException(status_code=404, detail="figma comment image empty")
+    mt = row.get("mime_type") or "image/png"
+    return Response(
+        content=bytes(blob),
         media_type=mt,
         headers={"Cache-Control": "public, max-age=86400"},
     )

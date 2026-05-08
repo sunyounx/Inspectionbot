@@ -6,8 +6,9 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from db.database import (
-    absorb_parent_pending_if_any,
+    absorb_open_pendings_for_thread,
     get_raw_message_by_ts,
+    get_raw_thread_replies,
     get_top_level_raw_since,
     has_open_pending_for_source_ts,
     insert_message_file,
@@ -110,15 +111,26 @@ async def _process_potential_feedback(
     if pt:
         parent = get_raw_message_by_ts(pt)
         parent_text = (parent or {}).get("text") or ""
+
+        # 스레드의 모든 댓글을 시간순으로 모아 누적 full_text 구성.
+        # 현재 댓글은 _persist_message_and_files()에서 이미 slack_raw_messages에 적재된 상태.
+        thread_replies = get_raw_thread_replies(pt)
+        reply_blocks: list[str] = []
+        for r in thread_replies:
+            rtext = (r.get("text") or "").strip()
+            if rtext:
+                reply_blocks.append(rtext)
+
         if parent_text.strip():
-            full_text_for_pending = f"{parent_text}\n---\n{text}"
+            full_text_for_pending = parent_text + "\n---\n" + "\n---\n".join(reply_blocks)
         else:
-            full_text_for_pending = text
+            full_text_for_pending = "\n---\n".join(reply_blocks)
     else:
         full_text_for_pending = text
 
     if pt:
-        absorb_parent_pending_if_any(pt)
+        # 부모 + 모든 형제 댓글의 기존 '대기중' pending을 일괄 '흡수됨'으로 마킹
+        absorb_open_pendings_for_thread(pt)
 
     insert_pending_approval(
         {

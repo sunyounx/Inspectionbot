@@ -188,6 +188,36 @@ def export_frame_as_png(file_key: str, node_id: str, scale: int = 2) -> str | No
     return m.get(nid)
 
 
+def fetch_file_comments(file_key: str) -> list[dict[str, Any]]:
+    """Figma /v1/files/{key}/comments — 전체 댓글(부모+답글) 리스트.
+    각 항목 키: id, parent_id, message, user{id,handle,img_url}, client_meta{node_id,...},
+    created_at, resolved_at."""
+    fk = (file_key or "").strip()
+    if not fk:
+        return []
+    url = f"{FIGMA_API}/files/{quote(fk, safe='')}/comments"
+    r = _request_json("GET", url)
+    if r.status_code == 403:
+        raise PermissionError("해당 Figma 파일에 접근할 수 없습니다. 토큰 소유자에게 파일 공유·권한을 확인하세요.")
+    if r.status_code >= 400:
+        raise RuntimeError(f"Figma comments API error {r.status_code}: {r.text[:500]}")
+    data = r.json()
+    raw = data.get("comments") or []
+    out: list[dict[str, Any]] = []
+    for c in raw:
+        if isinstance(c, dict):
+            out.append(c)
+    return out
+
+
+def build_figma_comment_link(file_key: str, comment_id: str) -> str:
+    fk = (file_key or "").strip()
+    cid = (comment_id or "").strip()
+    if not fk or not cid:
+        return ""
+    return f"https://www.figma.com/file/{fk}?#{cid}"
+
+
 def download_figma_image(cdn_url: str) -> bytes | None:
     """내보내기 URL에서 PNG 바이트(CDN은 보통 무인증). 실패 시 None."""
     u = (cdn_url or "").strip()
