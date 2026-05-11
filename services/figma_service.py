@@ -211,11 +211,14 @@ def fetch_file_comments(file_key: str) -> list[dict[str, Any]]:
 
 
 def build_figma_comment_link(file_key: str, comment_id: str) -> str:
+    """Figma 댓글 deep-link. 최신 `/design/` 경로 + 명시적 fragment.
+    `?#fragment` 같이 빈 query string 뒤 fragment를 두면 일부 환경에서 라우팅이 깨져
+    about:blank로 떨어지므로 `/design/{key}/x#comment_id` 형태로 단순화한다."""
     fk = (file_key or "").strip()
     cid = (comment_id or "").strip()
     if not fk or not cid:
         return ""
-    return f"https://www.figma.com/file/{fk}?#{cid}"
+    return f"https://www.figma.com/design/{fk}/x#{cid}"
 
 
 def download_figma_image(cdn_url: str) -> bytes | None:

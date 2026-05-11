@@ -388,10 +388,7 @@ def get_pending_approvals_for_admin(
         SELECT * FROM pending_approvals
         WHERE {where_sql}
         ORDER BY
-          CASE WHEN source_ts ~ '^[0-9]+(\\.[0-9]+)?$'
-               THEN source_ts::double precision
-               ELSE NULL
-          END {dir_sql} NULLS LAST,
+          message_time {dir_sql} NULLS LAST,
           id {dir_sql}
         LIMIT %s OFFSET %s
     """
