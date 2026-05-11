@@ -655,13 +655,15 @@ def slack_raw_message_ts_exists(ts: str) -> bool:
 
 
 def get_top_level_raw_since(ts_floor: float) -> list[dict[str, Any]]:
-    """parent_ts IS NULL 이고 ts >= ts_floor 인 최상위 메시지."""
+    """parent_ts IS NULL 이고 ts >= ts_floor 인 최상위 Slack 메시지.
+    figma 댓글용 가짜 ts(`figma:...`)는 CAST에서 깨지므로 channel로 제외."""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT ts FROM slack_raw_messages
                 WHERE parent_ts IS NULL
+                  AND channel NOT LIKE 'figma:%%'
                   AND CAST(ts AS DOUBLE PRECISION) >= %s
                 ORDER BY CAST(ts AS DOUBLE PRECISION) ASC
                 """,
@@ -680,6 +682,7 @@ def get_raw_thread_replies_bulk(parent_ts_list: list[str]) -> dict[str, list[dic
                 """
                 SELECT * FROM slack_raw_messages
                 WHERE parent_ts = ANY(%s)
+                  AND channel NOT LIKE 'figma:%%'
                 ORDER BY parent_ts, CAST(ts AS DOUBLE PRECISION) ASC
                 """,
                 (cleaned,),
@@ -746,6 +749,7 @@ def get_raw_thread_replies(parent_ts: str) -> list[dict[str, Any]]:
                 """
                 SELECT * FROM slack_raw_messages
                 WHERE parent_ts = %s
+                  AND channel NOT LIKE 'figma:%%'
                 ORDER BY CAST(ts AS DOUBLE PRECISION) ASC
                 """,
                 (parent_ts,),

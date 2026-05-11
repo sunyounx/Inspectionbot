@@ -30,6 +30,7 @@ async def main() -> None:
         cur.execute(
             "SELECT ts, channel, user_id, text FROM slack_raw_messages "
             "WHERE parent_ts IS NULL AND is_bot = 0 "
+            "AND channel NOT LIKE 'figma:%%' "
             "AND CAST(ts AS DOUBLE PRECISION) >= %s "
             "ORDER BY CAST(ts AS DOUBLE PRECISION) ASC",
             (CUTOFF_TS,),
@@ -53,6 +54,7 @@ async def main() -> None:
             cur.execute(
                 "SELECT ts, channel, user_id, text FROM slack_raw_messages "
                 "WHERE parent_ts = %s AND is_bot = 0 "
+                "AND channel NOT LIKE 'figma:%%' "
                 "ORDER BY CAST(ts AS DOUBLE PRECISION) ASC",
                 (ts,),
             )
