@@ -24,7 +24,11 @@ def _connect():
     dsn = (os.getenv("DATABASE_URL") or "").strip()
     if not dsn:
         raise RuntimeError("DATABASE_URL is required (Replit PostgreSQL)")
-    conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg2.connect(
+        dsn,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+        connect_timeout=10,
+    )
     try:
         yield conn
     finally:

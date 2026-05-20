@@ -1,3 +1,9 @@
+from __future__ import annotations
+
+import asyncio
+import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +18,29 @@ from routers import gdrive, history, inspect, manual
 from services.figma_polling import figma_poll_loop
 from services.polling import poll_slack_loop
 
-app = FastAPI(title="올더뮤 검수봇 v3")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await asyncio.to_thread(init_db)
+    print("[startup] init_db ok", flush=True)
+
+    poll_tasks: list[asyncio.Task[None]] = []
+    try:
+        poll_tasks.append(asyncio.create_task(poll_slack_loop()))
+        poll_tasks.append(asyncio.create_task(figma_poll_loop()))
+        print("[startup] poll loops started", flush=True)
+    except Exception as e:
+        print(f"[startup] failed to start poll loops: {e}", flush=True)
+
+    yield
+
+    for task in poll_tasks:
+        task.cancel()
+    if poll_tasks:
+        await asyncio.gather(*poll_tasks, return_exceptions=True)
+
+
+app = FastAPI(title="올더뮤 검수봇 v3", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,25 +48,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup():
-    init_db()
-    # Slack/Figma 모두 읽기+DB 적재만 수행 (외부에 메시지 전송 없음)
-    try:
-        import asyncio
-
-        asyncio.create_task(poll_slack_loop())
-    except Exception as e:
-        print(f"[startup] failed to start slack poll loop: {e}")
-    try:
-        import asyncio
-
-        asyncio.create_task(figma_poll_loop())
-    except Exception as e:
-        print(f"[startup] failed to start figma poll loop: {e}")
-
 
 app.include_router(approval.router)
 app.include_router(inspect.router)
@@ -65,4 +74,5 @@ def admin():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", "5000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
