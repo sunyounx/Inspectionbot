@@ -43,7 +43,12 @@ from services.gemini_service import (
     refine_with_document,
 )
 from services.image_utils import resize_thumbnail
-from services.slack_service import download_slack_image, extract_document_links
+from services.notion_service import read_notion_page
+from services.slack_service import (
+    download_slack_image,
+    extract_document_links,
+    extract_notion_links,
+)
 from services.teams_service import send_slack_feedback_notification
 
 
@@ -57,7 +62,7 @@ _ALLOWED_CATEGORIES = frozenset({"크리에이티브", "프로모션", "CRM", "�
 async def _ensure_token_for_docs(
     pending: dict[str, Any], request: Request
 ) -> str | None:
-    """pending의 full_text에 Google 문서 링크가 있고 토큰이 없으면 412로 중단."""
+    """pending의 full_text에 Google 문서 링크가 있으면 OAuth 토큰을 확인."""
     full_raw = (pending.get("full_text") or "").strip()
     doc_links = extract_document_links(full_raw)
     sid = get_gdrive_session_id(request)
@@ -150,10 +155,15 @@ async def _insert_refined_history_with_token(
         full_raw = str(full_raw or "")
 
     doc_links = extract_document_links(full_raw)
-    doc_content: str | None = None
-    if access_token and doc_links:
+    notion_links = extract_notion_links(full_raw)
+    parts_doc: list[str] = []
+
+    if doc_links:
+        if not access_token:
+            raise RuntimeError(
+                "Google Drive 로그인이 필요합니다. 로그인 후 다시 승인을 눌러주세요."
+            )
         print(f"[approve] reading {len(doc_links)} doc links (using {min(len(doc_links), 5)})", flush=True)
-        parts_doc: list[str] = []
         for link in doc_links[:5]:
             try:
                 blob = await asyncio.to_thread(
@@ -162,15 +172,39 @@ async def _insert_refined_history_with_token(
                     link["type"],
                     access_token,
                 )
-                if blob:
-                    parts_doc.append(f"[{link['type']} {link['file_id']}]\n{blob}")
-                    print(f"[approve] doc ok {link['type']} {link['file_id']} ({len(blob)} chars)", flush=True)
-                else:
-                    print(f"[approve] doc empty/unsupported {link['type']} {link['file_id']}", flush=True)
             except Exception as e:
                 print(f"[approve] doc read failed {link['type']} {link['file_id']}: {e}", flush=True)
-        if parts_doc:
-            doc_content = "\n\n---\n\n".join(parts_doc)
+                raise RuntimeError(
+                    f"Google 문서 읽기 실패 ({link['type']} {link['file_id']}): {e}"
+                ) from e
+            if blob:
+                parts_doc.append(f"[{link['type']} {link['file_id']}]\n{blob}")
+                print(f"[approve] doc ok {link['type']} {link['file_id']} ({len(blob)} chars)", flush=True)
+            else:
+                print(f"[approve] doc read failed {link['type']} {link['file_id']}: empty/unsupported", flush=True)
+                raise RuntimeError(
+                    f"Google 문서를 읽을 수 없습니다 ({link['type']} {link['file_id']}). "
+                    "지원하지 않는 파일이거나 접근 권한이 없습니다."
+                )
+
+    if notion_links:
+        print(f"[approve] reading {len(notion_links)} notion links (using {min(len(notion_links), 5)})", flush=True)
+        for link in notion_links[:5]:
+            url = link["url"]
+            try:
+                blob = await asyncio.to_thread(read_notion_page, url)
+            except Exception as e:
+                print(f"[approve] notion read failed {url}: {e}", flush=True)
+                raise RuntimeError(f"Notion 페이지 읽기 실패 ({url}): {e}") from e
+            if blob:
+                parts_doc.append(f"[notion {url}]\n{blob}")
+                print(f"[approve] notion ok {url} ({len(blob)} chars)", flush=True)
+            else:
+                # Notion 빈 페이지: integration 접근은 됐으나 본문 없음 → soft-fail(적재 계속).
+                # Google은 None이 권한/미지원/읽기 실패이므로 hard-fail.
+                print(f"[approve] notion empty page {url}", flush=True)
+
+    doc_content = "\n\n---\n\n".join(parts_doc) if parts_doc else None
 
     refined = await asyncio.to_thread(refine_with_document, full_raw, doc_content)
 
@@ -317,14 +351,14 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
                     row = get_pending_approval_by_id(id)
                     if not row or row.get("status") != "처리중":
                         return
-                    if old_id:
-                        update_history_status(int(old_id), "변경됨", today)
-                        invalidate_system_cache()
                     await _insert_refined_history_with_token(
                         row,
                         access_token,
                         category_override=body.category,
                     )
+                    if old_id:
+                        update_history_status(int(old_id), "변경됨", today)
+                        invalidate_system_cache()
                     update_pending_status(id, "승인됨")
                 except Exception as e:
                     print(f"[bg_use_new] 실패: {e}", flush=True)

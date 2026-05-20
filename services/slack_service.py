@@ -127,6 +127,16 @@ def clean_slack_markup(text: str) -> str:
     return t.strip()
 
 
+def extract_notion_links(text: str) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for url in _extract_text_urls(text or ""):
+        if _classify_external_type(url) == "notion" and url not in seen:
+            seen.add(url)
+            out.append({"type": "notion", "url": url})
+    return out
+
+
 def extract_document_links(text: str) -> list[dict[str, str]]:
     """Google Docs/Sheets/Slides URL에서 file_id·타입 추출 (중복 file_id 제외)."""
     t = text or ""

@@ -30,6 +30,9 @@ from services.figma_service import (
 
 KST = timezone(timedelta(hours=9))
 
+# Slack 폴링의 EARLIEST_TS와 동일 (2026-04-01 기준). 이 이전에 마지막 활동이 있는 스레드는 skip.
+EARLIEST_EPOCH = 1774828800.0
+
 
 def _watched_file_keys() -> list[str]:
     raw = os.getenv("FIGMA_WATCHED_FILE_KEYS", "") or ""
@@ -98,6 +101,14 @@ async def _process_file(file_key: str, advertiser_handles: set[str]) -> int:
     processed = 0
     for root_id, thread in threads.items():
         if advertiser_handles and not any(_author_label(c) in advertiser_handles for c in thread):
+            continue
+
+        # 스레드의 가장 최근 활동이 컷오프(2026-04-01) 이전이면 skip — 옛 댓글 적재 안 함
+        latest_epoch = max(
+            (_parse_figma_iso(c.get("created_at") or "") for c in thread),
+            default=0.0,
+        )
+        if latest_epoch < EARLIEST_EPOCH:
             continue
 
         source_ts = f"figma:{file_key}:{root_id}"
