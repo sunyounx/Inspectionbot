@@ -71,6 +71,9 @@ def init_db() -> None:
             cur.execute(
                 "ALTER TABLE IF EXISTS pending_approvals ADD COLUMN IF NOT EXISTS teams_notified INTEGER NOT NULL DEFAULT 0"
             )
+            cur.execute(
+                "ALTER TABLE IF EXISTS pending_approvals ADD COLUMN IF NOT EXISTS approved_history_id INTEGER"
+            )
             # multi-user gdrive oauth tokens: migrate old table(id=1) → session_id keyed
             cur.execute(
                 """
@@ -518,6 +521,73 @@ def update_pending_status(id: int, status: str) -> None:
         with conn.cursor() as cur:
             cur.execute("UPDATE pending_approvals SET status = %s WHERE id = %s", (status, id))
         conn.commit()
+
+
+def update_pending_approved(id: int, history_id: int) -> None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE pending_approvals SET status = %s, approved_history_id = %s WHERE id = %s",
+                ("승인됨", int(history_id), int(id)),
+            )
+        conn.commit()
+
+
+def cancel_pending_approval(id: int) -> dict[str, Any]:
+    """승인됨 pending을 대기중으로 되돌리고, 연결된 히스토리를 삭제한다. use_new 시 변경됨→활성 복구."""
+    today = _date.today().isoformat()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM pending_approvals WHERE id = %s", (int(id),))
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "reason": "not_found"}
+            pending = dict(row)
+            if (pending.get("status") or "").strip() != "승인됨":
+                return {"ok": False, "reason": "not_approved", "status": pending.get("status")}
+
+            history_id = pending.get("approved_history_id")
+            if history_id is None:
+                sts = (pending.get("source_ts") or "").strip()
+                if sts:
+                    cur.execute(
+                        "SELECT id FROM history WHERE source_ts = %s ORDER BY id DESC LIMIT 1",
+                        (sts,),
+                    )
+                    found = cur.fetchone()
+                    if found:
+                        history_id = int(found["id"])
+
+            deleted_history_id: int | None = None
+            if history_id is not None:
+                cur.execute("DELETE FROM history WHERE id = %s", (int(history_id),))
+                if cur.rowcount > 0:
+                    deleted_history_id = int(history_id)
+
+            restored_old_history_id: int | None = None
+            old_id = pending.get("conflict_old_history_id")
+            if old_id is not None:
+                cur.execute("SELECT status FROM history WHERE id = %s", (int(old_id),))
+                old_row = cur.fetchone()
+                if old_row and (old_row.get("status") or "").strip() == "변경됨":
+                    cur.execute(
+                        "UPDATE history SET status = %s, changed_date = %s WHERE id = %s",
+                        ("활성", today, int(old_id)),
+                    )
+                    restored_old_history_id = int(old_id)
+
+            cur.execute(
+                "UPDATE pending_approvals SET status = %s, approved_history_id = NULL WHERE id = %s",
+                ("대기중", int(id)),
+            )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "pending_status": "대기중",
+        "deleted_history_id": deleted_history_id,
+        "restored_old_history_id": restored_old_history_id,
+    }
 
 
 def update_pending_teams_notified(id: int, notified: bool) -> None:

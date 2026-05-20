@@ -226,42 +226,20 @@ class TestReadNotionPage(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             read_notion_page(self._URL)
         self.assertIn("권한", str(ctx.exception))
+        mock_client_cls.return_value.get.assert_called_once()
 
     @patch.dict("os.environ", {}, clear=True)
+    def test_no_token_raises_without_http(self) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            read_notion_page(self._URL)
+        self.assertIn("NOTION_API_TOKEN", str(ctx.exception))
+
+    @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
     @patch("services.notion_service.httpx.Client")
-    def test_public_url_without_token_reads_html(self, mock_client_cls: MagicMock) -> None:
-        html = """
-        <html>
-          <head>
-            <title>Campaign Rule</title>
-            <meta name="description" content="Main description">
-            <script>ignore me</script>
-          </head>
-          <body><main><h1>Headline</h1><p>Body text</p></main></body>
-        </html>
-        """
-        client = MagicMock()
-        resp = MagicMock(status_code=200)
-        resp.text = html
-        client.get.return_value = resp
-        client.__enter__.return_value = client
-        client.__exit__.return_value = False
-        mock_client_cls.return_value = client
-
-        text = read_notion_page(self._URL)
-
-        self.assertIn("Campaign Rule", text)
-        self.assertIn("Main description", text)
-        self.assertIn("Headline", text)
-        self.assertIn("Body text", text)
-        self.assertNotIn("ignore me", text)
-
-    @patch.dict("os.environ", {}, clear=True)
-    @patch("services.notion_service.httpx.Client")
-    def test_public_url_403_raises(self, mock_client_cls: MagicMock) -> None:
+    def test_api_403_does_not_fallback(self, mock_client_cls: MagicMock) -> None:
         client = MagicMock()
         resp = MagicMock(status_code=403)
-        resp.text = "forbidden"
+        resp.json.return_value = {"message": "forbidden"}
         client.get.return_value = resp
         client.__enter__.return_value = client
         client.__exit__.return_value = False
@@ -269,28 +247,12 @@ class TestReadNotionPage(unittest.TestCase):
 
         with self.assertRaises(RuntimeError) as ctx:
             read_notion_page(self._URL)
-        self.assertIn("접근 권한", str(ctx.exception))
-
-    @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
-    @patch("services.notion_service.httpx.Client")
-    def test_token_api_failure_falls_back_to_public_url(self, mock_client_cls: MagicMock) -> None:
-        api_client = MagicMock()
-        api_resp = MagicMock(status_code=403)
-        api_resp.json.return_value = {"message": "forbidden"}
-        api_client.get.return_value = api_resp
-        api_client.__enter__.return_value = api_client
-        api_client.__exit__.return_value = False
-
-        public_client = MagicMock()
-        public_resp = MagicMock(status_code=200)
-        public_resp.text = "<html><body><h1>Public Body</h1></body></html>"
-        public_client.get.return_value = public_resp
-        public_client.__enter__.return_value = public_client
-        public_client.__exit__.return_value = False
-
-        mock_client_cls.side_effect = [api_client, public_client]
-
-        self.assertEqual(read_notion_page(self._URL), "Public Body")
+        self.assertIn("권한", str(ctx.exception))
+        self.assertNotIn("공개", str(ctx.exception))
+        mock_client_cls.assert_called_once()
+        self.assertTrue(
+            mock_client_cls.return_value.get.call_args[0][0].startswith("https://api.notion.com/")
+        )
 
 
 class TestApprovalHardFail(unittest.IsolatedAsyncioTestCase):
@@ -430,6 +392,38 @@ class TestApprovalHardFail(unittest.IsolatedAsyncioTestCase):
         mock_read_notion.assert_not_called()
         self.assertIsNone(mock_refine.call_args[0][1])
         mock_insert.assert_called_once()
+
+
+class TestCancelApproval(unittest.TestCase):
+    @patch("routers.approval.cancel_pending_approval")
+    @patch("routers.approval.invalidate_system_cache")
+    @patch("routers.approval.get_pending_approval_by_id")
+    def test_cancel_ok(self, mock_get, _mock_inv, mock_cancel) -> None:
+        from routers.approval import cancel_approval
+
+        mock_get.return_value = {"id": 7, "status": "승인됨"}
+        mock_cancel.return_value = {
+            "ok": True,
+            "pending_status": "대기중",
+            "deleted_history_id": 99,
+            "restored_old_history_id": None,
+        }
+
+        result = cancel_approval(7)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deleted_history_id"], 99)
+        mock_cancel.assert_called_once_with(7)
+
+    @patch("routers.approval.get_pending_approval_by_id")
+    def test_cancel_rejects_non_approved(self, mock_get) -> None:
+        from fastapi import HTTPException
+
+        from routers.approval import cancel_approval
+
+        mock_get.return_value = {"id": 7, "status": "대기중"}
+        with self.assertRaises(HTTPException) as ctx:
+            cancel_approval(7)
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":

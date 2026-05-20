@@ -30,6 +30,8 @@ from db.database import (
     insert_slack_inspection,
     insert_slack_inspection_thumbnail,
     update_history_status,
+    cancel_pending_approval,
+    update_pending_approved,
     update_pending_status,
     update_pending_teams_notified,
 )
@@ -297,12 +299,12 @@ async def approve(
                 row = get_pending_approval_by_id(id)
                 if not row or row.get("status") != "처리중":
                     return
-                await _insert_refined_history_with_token(
+                history_id = await _insert_refined_history_with_token(
                     row,
                     access_token,
                     category_override=body.category,
                 )
-                update_pending_status(id, "승인됨")
+                update_pending_approved(id, history_id)
             except Exception as e:
                 print(f"[bg_refine] 실패: {e}", flush=True)
                 update_pending_status(id, "대기중")
@@ -311,6 +313,29 @@ async def approve(
         {"ok": True, "status": "processing"},
         background=BackgroundTask(bg_refine),
     )
+
+
+@router.post("/approvals/{id}/cancel")
+def cancel_approval(id: int):
+    """승인 취소: 연결된 히스토리 삭제 후 pending을 대기중으로 되돌린다."""
+    pending = get_pending_approval_by_id(id)
+    if not pending:
+        raise HTTPException(status_code=404, detail="pending approval not found")
+    if (pending.get("status") or "").strip() != "승인됨":
+        raise HTTPException(
+            status_code=400,
+            detail="승인 취소는 승인됨 상태에서만 가능합니다.",
+        )
+
+    result = cancel_pending_approval(id)
+    if not result.get("ok"):
+        reason = result.get("reason")
+        if reason == "not_found":
+            raise HTTPException(status_code=404, detail="pending approval not found")
+        raise HTTPException(status_code=400, detail=result)
+
+    invalidate_system_cache()
+    return result
 
 
 @router.post("/approvals/{id}/reject")
@@ -351,7 +376,7 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
                     row = get_pending_approval_by_id(id)
                     if not row or row.get("status") != "처리중":
                         return
-                    await _insert_refined_history_with_token(
+                    history_id = await _insert_refined_history_with_token(
                         row,
                         access_token,
                         category_override=body.category,
@@ -359,7 +384,7 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
                     if old_id:
                         update_history_status(int(old_id), "변경됨", today)
                         invalidate_system_cache()
-                    update_pending_status(id, "승인됨")
+                    update_pending_approved(id, history_id)
                 except Exception as e:
                     print(f"[bg_use_new] 실패: {e}", flush=True)
                     update_pending_status(id, "대기중")
@@ -383,12 +408,12 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
                     row = get_pending_approval_by_id(id)
                     if not row or row.get("status") != "처리중":
                         return
-                    await _insert_refined_history_with_token(
+                    history_id = await _insert_refined_history_with_token(
                         row,
                         access_token,
                         category_override=body.category,
                     )
-                    update_pending_status(id, "승인됨")
+                    update_pending_approved(id, history_id)
                 except Exception as e:
                     print(f"[bg_keep_both] 실패: {e}", flush=True)
                     update_pending_status(id, "대기중")

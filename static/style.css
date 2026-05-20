@@ -1271,6 +1271,11 @@ textarea:focus {
   color: #1565c0;
 }
 
+.badge-승인됨 {
+  background: rgba(34, 197, 94, 0.12);
+  color: #15803d;
+}
+
 .badge-처리중 {
   background: rgba(180, 83, 9, 0.14);
   color: var(--warn);

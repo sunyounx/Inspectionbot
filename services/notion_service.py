@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,45 +13,6 @@ _UUID_HYPHEN_RE = re.compile(
     r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
     re.I,
 )
-
-class _PlainHTMLParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self._skip_depth = 0
-        self._title_depth = 0
-        self.title_parts: list[str] = []
-        self.text_parts: list[str] = []
-        self.meta_description: str = ""
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        t = tag.lower()
-        if t in ("script", "style", "noscript", "svg"):
-            self._skip_depth += 1
-        if t == "title":
-            self._title_depth += 1
-        if t == "meta":
-            attrs_map = {k.lower(): (v or "") for k, v in attrs}
-            name = attrs_map.get("name", "").lower()
-            prop = attrs_map.get("property", "").lower()
-            if name == "description" or prop == "og:description":
-                self.meta_description = attrs_map.get("content", "").strip()
-
-    def handle_endtag(self, tag: str) -> None:
-        t = tag.lower()
-        if t in ("script", "style", "noscript", "svg") and self._skip_depth:
-            self._skip_depth -= 1
-        if t == "title" and self._title_depth:
-            self._title_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        text = re.sub(r"\s+", " ", data or "").strip()
-        if not text:
-            return
-        if self._title_depth:
-            self.title_parts.append(text)
-            return
-        if not self._skip_depth:
-            self.text_parts.append(text)
 
 
 def extract_page_id(url: str) -> str:
@@ -76,14 +36,6 @@ def extract_page_id(url: str) -> str:
         return tail.group(1).lower()
 
     raise RuntimeError("Notion URL에서 page id를 추출할 수 없습니다.")
-
-
-def _is_public_notion_url(url: str) -> bool:
-    parsed = urlparse((url or "").strip())
-    host = (parsed.netloc or "").lower()
-    if parsed.scheme not in ("http", "https"):
-        return False
-    return host == "notion.so" or host.endswith(".notion.so") or host == "notion.site" or host.endswith(".notion.site")
 
 
 def _notion_token() -> str:
@@ -173,15 +125,6 @@ def _raise_for_status(resp: httpx.Response, *, context: str) -> None:
         raise RuntimeError(f"Notion API 오류 ({resp.status_code}): {detail}")
 
 
-def _raise_for_public_status(resp: httpx.Response, *, context: str) -> None:
-    if resp.status_code in (401, 403):
-        raise RuntimeError(f"공개 Notion 페이지 접근 권한 오류: 링크 공유 상태를 확인하세요. ({context})")
-    if resp.status_code == 404:
-        raise RuntimeError(f"공개 Notion 페이지를 찾을 수 없습니다. ({context})")
-    if resp.status_code >= 400:
-        raise RuntimeError(f"공개 Notion 페이지 읽기 오류 ({resp.status_code}): {context}")
-
-
 def _get_json(
     client: httpx.Client,
     path: str,
@@ -237,7 +180,14 @@ def _collect_blocks(
     return total_chars
 
 
-def _read_notion_page_api(url: str, token: str) -> str | None:
+def read_notion_page(url: str) -> str | None:
+    """Notion 공식 API로만 페이지 본문을 읽는다. integration 공유 + NOTION_API_TOKEN 필수."""
+    token = _notion_token()
+    if not token:
+        raise RuntimeError(
+            "NOTION_API_TOKEN이 설정되지 않았습니다. .env에 토큰을 추가한 뒤 다시 시도하세요."
+        )
+
     page_id = extract_page_id(url)
     api_id = _api_id(page_id)
 
@@ -257,60 +207,3 @@ def _read_notion_page_api(url: str, token: str) -> str | None:
     if len(body) > _MAX_CHARS:
         body = body[:_MAX_CHARS]
     return body
-
-
-def _read_public_notion_page(url: str) -> str | None:
-    if not _is_public_notion_url(url):
-        raise RuntimeError("공개 Notion URL만 읽을 수 있습니다.")
-
-    try:
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            resp = client.get(
-                url,
-                headers={
-                    "User-Agent": "Inspectionbot/1.0",
-                    "Accept": "text/html,application/xhtml+xml",
-                },
-            )
-            _raise_for_public_status(resp, context=url)
-            html = resp.text or ""
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError(f"공개 Notion 페이지 읽기 실패: {e}") from e
-
-    parser = _PlainHTMLParser()
-    try:
-        parser.feed(html)
-    except Exception as e:
-        raise RuntimeError(f"공개 Notion HTML 파싱 실패: {e}") from e
-
-    parts: list[str] = []
-    title = " ".join(parser.title_parts).strip()
-    if title:
-        parts.append(title)
-    if parser.meta_description:
-        parts.append(parser.meta_description)
-    for text in parser.text_parts:
-        if text not in parts:
-            parts.append(text)
-
-    body = "\n".join(parts).strip()
-    if not body:
-        return None
-    if len(body) > _MAX_CHARS:
-        body = body[:_MAX_CHARS]
-    return body
-
-
-def read_notion_page(url: str) -> str | None:
-    token = _notion_token()
-    if token:
-        try:
-            return _read_notion_page_api(url, token)
-        except RuntimeError as api_error:
-            try:
-                return _read_public_notion_page(url)
-            except RuntimeError as public_error:
-                raise RuntimeError(f"{api_error}; 공개 링크 읽기도 실패: {public_error}") from public_error
-    return _read_public_notion_page(url)

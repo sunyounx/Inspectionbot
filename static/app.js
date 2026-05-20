@@ -795,6 +795,7 @@ function approvalStatusBadgeClass(status) {
   const s = status || "대기중";
   if (s === "처리중") return "badge-처리중";
   if (s === "대기중") return "badge-대기중";
+  if (s === "승인됨") return "badge-승인됨";
   return "badge-활성";
 }
 
@@ -1765,6 +1766,110 @@ function wireAdminModalActions(item) {
     }
   }
 
+  const appendInspectAndCopybank = () => {
+    const inspectTeams = el("button", {
+      type: "button",
+      className: "btn btn-ghost btn-sm",
+      text: "🔍 검수 + Teams 전송",
+    });
+    inspectTeams.addEventListener("click", async () => {
+      const prevLabel = inspectTeams.textContent;
+      adminStatus.textContent = "검수 중...";
+      setAdminModalButtonsBusy(true);
+      inspectTeams.textContent = "검수 중...";
+      try {
+        const res = await apiJson("POST", `/api/approvals/${item.id}/inspect-and-notify`, {});
+        if (res?.already_sent) {
+          adminStatus.textContent = "이미 Teams로 전송된 항목입니다.";
+          inspectTeams.textContent = prevLabel;
+          setAdminModalButtonsBusy(false);
+          return;
+        }
+        inspectTeams.textContent = "✓ 전송됨";
+        const sid = res?.slack_inspection_id;
+        adminStatus.textContent =
+          sid != null ? `전송 완료 · 검수 #${sid}` : "전송 완료";
+      } catch (e) {
+        adminStatus.textContent = `에러: ${e.message}`;
+        inspectTeams.textContent = prevLabel;
+      }
+      setAdminModalButtonsBusy(false);
+    });
+    adminModalActions.appendChild(inspectTeams);
+
+    const saveCopybank = el("button", {
+      type: "button",
+      className: "btn btn-ghost btn-sm",
+      text: "📝 카피뱅크 저장",
+    });
+    saveCopybank.addEventListener("click", async () => {
+      const prev = saveCopybank.textContent;
+      adminStatus.textContent = "저장 중...";
+      setAdminModalButtonsBusy(true);
+      saveCopybank.textContent = "저장 중…";
+      try {
+        const copy_text =
+          String(item.full_text || "").trim() ||
+          String(item.original_quote || "").trim() ||
+          String(item.summary || "").trim();
+        if (!copy_text) {
+          adminStatus.textContent = "저장할 텍스트가 없습니다.";
+          saveCopybank.textContent = prev;
+          setAdminModalButtonsBusy(false);
+          return;
+        }
+        await postJsonExpectOk("/api/copybank", { copy_text, source: "slack" });
+        saveCopybank.textContent = "✓ 카피뱅크에 저장됨";
+        adminStatus.textContent = "저장 완료";
+        saveCopybank.disabled = true;
+      } catch (e) {
+        adminStatus.textContent = `에러: ${e.message}`;
+        saveCopybank.textContent = prev;
+      }
+      setAdminModalButtonsBusy(false);
+    });
+    adminModalActions.appendChild(saveCopybank);
+  };
+
+  if ((item.status || "").trim() === "승인됨") {
+    const cancelBtn = el("button", {
+      type: "button",
+      className: "btn btn-ghost btn-sm",
+      text: "승인 취소",
+    });
+    cancelBtn.addEventListener("click", async () => {
+      if (
+        !confirm(
+          "승인을 취소하면 적재된 히스토리가 삭제되고 이 항목은 대기중으로 돌아갑니다. 다시 승인할 수 있습니다. 계속할까요?"
+        )
+      ) {
+        return;
+      }
+      adminStatus.textContent = "취소 중...";
+      setAdminModalButtonsBusy(true);
+      try {
+        const res = await apiJson("POST", `/api/approvals/${item.id}/cancel`, {});
+        const parts = ["승인 취소 완료 · 대기중으로 복구"];
+        if (res?.deleted_history_id != null) {
+          parts.push(`히스토리 #${res.deleted_history_id} 삭제`);
+        }
+        if (res?.restored_old_history_id != null) {
+          parts.push(`기존 히스토리 #${res.restored_old_history_id} 활성 복구`);
+        }
+        adminStatus.textContent = parts.join(" · ");
+        await loadAdmin();
+        if (typeof loadHistory === "function") await loadHistory();
+        closeAdminModal();
+      } catch (e) {
+        adminStatus.textContent = `에러: ${e.message}`;
+        setAdminModalButtonsBusy(false);
+      }
+    });
+    adminModalActions.appendChild(cancelBtn);
+    appendInspectAndCopybank();
+    return;
+  }
+
   const approve = el("button", { type: "button", className: "btn btn-primary btn-sm", text: "승인(적재)" });
   approve.addEventListener("click", async () => {
     const prevApproveLabel = approve.textContent;
@@ -1813,69 +1918,7 @@ function wireAdminModalActions(item) {
 
   adminModalActions.appendChild(approve);
   adminModalActions.appendChild(reject);
-
-  const inspectTeams = el("button", {
-    type: "button",
-    className: "btn btn-ghost btn-sm",
-    text: "🔍 검수 + Teams 전송",
-  });
-  inspectTeams.addEventListener("click", async () => {
-    const prevLabel = inspectTeams.textContent;
-    adminStatus.textContent = "검수 중...";
-    setAdminModalButtonsBusy(true);
-    inspectTeams.textContent = "검수 중...";
-    try {
-      const res = await apiJson("POST", `/api/approvals/${item.id}/inspect-and-notify`, {});
-      if (res?.already_sent) {
-        adminStatus.textContent = "이미 Teams로 전송된 항목입니다.";
-        inspectTeams.textContent = prevLabel;
-        setAdminModalButtonsBusy(false);
-        return;
-      }
-      inspectTeams.textContent = "✓ 전송됨";
-      const sid = res?.slack_inspection_id;
-      adminStatus.textContent =
-        sid != null ? `전송 완료 · 검수 #${sid}` : "전송 완료";
-    } catch (e) {
-      adminStatus.textContent = `에러: ${e.message}`;
-      inspectTeams.textContent = prevLabel;
-    }
-    setAdminModalButtonsBusy(false);
-  });
-  adminModalActions.appendChild(inspectTeams);
-
-  const saveCopybank = el("button", {
-    type: "button",
-    className: "btn btn-ghost btn-sm",
-    text: "📝 카피뱅크 저장",
-  });
-  saveCopybank.addEventListener("click", async () => {
-    const prev = saveCopybank.textContent;
-    adminStatus.textContent = "저장 중...";
-    setAdminModalButtonsBusy(true);
-    saveCopybank.textContent = "저장 중…";
-    try {
-      const copy_text =
-        String(item.full_text || "").trim() ||
-        String(item.original_quote || "").trim() ||
-        String(item.summary || "").trim();
-      if (!copy_text) {
-        adminStatus.textContent = "저장할 텍스트가 없습니다.";
-        saveCopybank.textContent = prev;
-        setAdminModalButtonsBusy(false);
-        return;
-      }
-      await postJsonExpectOk("/api/copybank", { copy_text, source: "slack" });
-      saveCopybank.textContent = "✓ 카피뱅크에 저장됨";
-      adminStatus.textContent = "저장 완료";
-      saveCopybank.disabled = true;
-    } catch (e) {
-      adminStatus.textContent = `에러: ${e.message}`;
-      saveCopybank.textContent = prev;
-    }
-    setAdminModalButtonsBusy(false);
-  });
-  adminModalActions.appendChild(saveCopybank);
+  appendInspectAndCopybank();
 
   if (Number(item.has_conflict) === 1) {
     const useNew = el("button", { type: "button", className: "btn btn-primary btn-sm", text: "신규로 교체" });

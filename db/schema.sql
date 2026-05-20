@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     conflict_explanation TEXT,
     conflict_recommendation TEXT,
     conflict_old_history_id INTEGER,
+    approved_history_id INTEGER,
     -- status: 대기중 | 처리중(히스토리 적재 중) | 승인됨 | 폐기됨 | 흡수됨(스레드 댓글 pending으로 대체됨)
     status TEXT NOT NULL DEFAULT '대기중',
     category TEXT NOT NULL DEFAULT '크리에이티브',
