@@ -153,6 +153,31 @@ def get_history_by_topic(topic: str) -> list[dict[str, Any]]:
             return _fetchall(cur)
 
 
+def get_history_by_id(id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM history WHERE id = %s", (int(id),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def find_pending_id_for_history_revert(history_id: int) -> int | None:
+    """승인됨 pending이 이 history id를 approved_history_id로 가리키면 pending id 반환."""
+    hid = int(history_id)
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id FROM pending_approvals
+                WHERE approved_history_id = %s AND status = %s
+                LIMIT 1
+                """,
+                (hid, "승인됨"),
+            )
+            row = cur.fetchone()
+            return int(row["id"]) if row else None
+
+
 def get_history(status: str | None = None, category: str | None = None) -> list[dict[str, Any]]:
     where: list[str] = []
     params: list[Any] = []

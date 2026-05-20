@@ -381,6 +381,7 @@ const historyModalCard = historyModal?.querySelector(".modal-card");
 const historyModalMeta = document.getElementById("historyModalMeta");
 const historyModalEdit = document.getElementById("historyModalEdit");
 const historyModalDelete = document.getElementById("historyModalDelete");
+const historyModalRevert = document.getElementById("historyModalRevert");
 const historyModalSave = document.getElementById("historyModalSave");
 const historyModalCancel = document.getElementById("historyModalCancel");
 const historyModalActionsRead = document.getElementById("historyModalActionsRead");
@@ -1570,6 +1571,22 @@ function renderHistoryModalRead() {
     : `<p class="modal-empty">내용이 없습니다.</p>${thumbsHtml}${filesHtml}`;
   historyModalActionsRead?.classList.remove("hidden");
   historyModalActionsEdit?.classList.add("hidden");
+  refreshHistoryRevertButton(item);
+}
+
+async function refreshHistoryRevertButton(item) {
+  if (!historyModalRevert || !item?.id) return;
+  historyModalRevert.classList.add("hidden");
+  historyModalRevert.disabled = true;
+  try {
+    const r = await apiJson("GET", `/api/history/${item.id}/revert-eligibility`, null);
+    if (r?.eligible) {
+      historyModalRevert.classList.remove("hidden");
+      historyModalRevert.disabled = false;
+    }
+  } catch (_) {
+    /* not linked to pending — hide button */
+  }
 }
 
 function historyModalFieldRow(labelText, inputEl) {
@@ -1728,6 +1745,32 @@ historyModalEdit?.addEventListener("click", () => renderHistoryModalEdit());
 historyModalCancel?.addEventListener("click", () => renderHistoryModalRead());
 historyModalSave?.addEventListener("click", () => historyModalSaveHandler());
 historyModalDelete?.addEventListener("click", () => historyModalDeleteHandler());
+
+historyModalRevert?.addEventListener("click", async () => {
+  const item = historyModalCurrentItem;
+  if (!item?.id) return;
+  if (
+    !confirm(
+      "승인을 되돌리면 이 히스토리가 삭제되고, 슬랙/Figma 승인 카드는 대기중으로 돌아갑니다. 다시 승인할 수 있습니다. 계속할까요?"
+    )
+  ) {
+    return;
+  }
+  try {
+    const res = await apiJson("POST", `/api/history/${item.id}/revert-approval`, {});
+    const parts = ["승인 되돌리기 완료"];
+    if (res?.pending_id != null) parts.push(`승인 카드 #${res.pending_id} → 대기중`);
+    if (res?.restored_old_history_id != null) {
+      parts.push(`기존 히스토리 #${res.restored_old_history_id} 활성 복구`);
+    }
+    alert(parts.join("\n"));
+    closeHistoryModal(true);
+    await loadHistory();
+    if (typeof loadAdmin === "function") await loadAdmin();
+  } catch (e) {
+    alert(`되돌리기 실패: ${e.message}`);
+  }
+});
 
 function closeAdminModal() {
   adminModalCurrentItem = null;

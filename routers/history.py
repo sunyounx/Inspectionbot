@@ -9,9 +9,12 @@ from pydantic import BaseModel
 from models.schemas import FEEDBACK_CATEGORY
 
 from db.database import (
+    cancel_pending_approval,
     delete_history,
+    find_pending_id_for_history_revert,
     get_files_by_ts_list,
     get_history,
+    get_history_by_id,
     get_raw_messages,
     get_raw_thread_replies,
     insert_history,
@@ -147,6 +150,39 @@ def put_history(id: int, body: HistoryPutBody):
         raise HTTPException(status_code=404, detail="history not found")
     invalidate_system_cache()
     return {"ok": True}
+
+
+@router.get("/history/{id}/revert-eligibility")
+def history_revert_eligibility(id: int):
+    """히스토리 탐색 모달: 승인 되돌리기 버튼 표시 여부."""
+    if not get_history_by_id(id):
+        raise HTTPException(status_code=404, detail="history not found")
+    pending_id = find_pending_id_for_history_revert(id)
+    if pending_id is None:
+        return {
+            "eligible": False,
+            "reason": "연결된 승인 대기 항목이 없습니다. 수동 적재는 삭제만 가능합니다.",
+        }
+    return {"eligible": True, "pending_id": pending_id}
+
+
+@router.post("/history/{id}/revert-approval")
+def history_revert_approval(id: int):
+    """승인 취소와 동일: 히스토리 삭제 + pending 대기중 복구 (+ 충돌 시 기존 활성 복구)."""
+    if not get_history_by_id(id):
+        raise HTTPException(status_code=404, detail="history not found")
+    pending_id = find_pending_id_for_history_revert(id)
+    if pending_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="이 히스토리는 승인 적재와 연결되지 않았거나, 이미 되돌린 항목입니다.",
+        )
+    result = cancel_pending_approval(pending_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    invalidate_system_cache()
+    result["pending_id"] = pending_id
+    return result
 
 
 @router.delete("/history/{id}")
