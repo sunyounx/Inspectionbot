@@ -12,10 +12,12 @@ This README would normally document whatever steps are necessary to get your app
 
 * Summary of set up
 * Configuration
-  * `NOTION_API_TOKEN`: Notion integration secret (`secret_...`). [Notion integrations](https://www.notion.so/myintegrations)에서 생성.
-  * 승인(히스토리 적재) 시 Notion 링크는 **공식 API만** 사용합니다. 해당 **페이지를 integration에 공유**해야 합니다. 미공유·권한 오류 시 승인이 실패합니다. (링크 공개만으로는 읽을 수 없습니다.)
+  * **Notion OAuth** (권장): `NOTION_OAUTH_CLIENT_ID`, `NOTION_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_REDIRECT_URI` — 웹 UI에서 Notion 연결 후 페이지 피커로 접근 허용.
+  * `NOTION_API_TOKEN`: (선택) OAuth 없을 때 internal integration fallback.
+  * API 403/404 시 Playwright 자동 폴백. Replit: `playwright install chromium`.
   * Notion database 동기화, 댓글, 첨부파일 다운로드는 1차 범위에서 제외됩니다.
   * Google 문서 링크는 기존과 같이 관리자 Google Drive OAuth 로그인이 필요합니다.
+  * 승인 파이프라인(`update_pending_approved`, `_resolve_doc_content`, `GEMINI_SEMAPHORE` 분리): [docs/approval-doc-read.md](docs/approval-doc-read.md)
 * Dependencies
 * Database configuration
   * 앱 스키마 기준 파일: `db/schema.sql` + 배포 시 `init_db()`의 `ALTER ... IF NOT EXISTS`

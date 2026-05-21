@@ -38,6 +38,8 @@ from db.database import (
 from prompts.inspect import build_system_prompt as build_inspect_prompt
 from services.gdrive_auth import ensure_gdrive_access_token, get_gdrive_session_id
 from services.gdrive_service import read_workspace_document
+from services.notion_auth import ensure_notion_access_token
+from services.notion_service import resolve_notion_token
 from services.gemini_service import (
     GEMINI_SEMAPHORE,
     inspect_creative,
@@ -45,7 +47,7 @@ from services.gemini_service import (
     refine_with_document,
 )
 from services.image_utils import resize_thumbnail
-from services.notion_service import read_notion_page
+from services.notion_service import _max_notion_links, read_notion_page
 from services.slack_service import (
     download_slack_image,
     extract_document_links,
@@ -61,22 +63,24 @@ _MAX_SLACK_IMAGES = 3
 _ALLOWED_CATEGORIES = frozenset({"크리에이티브", "프로모션", "CRM", "브랜딩", "퍼포먼스", "기타", "미분류"})
 
 
-async def _ensure_token_for_docs(
+async def _ensure_tokens_for_docs(
     pending: dict[str, Any], request: Request
-) -> str | None:
-    """pending의 full_text에 Google 문서 링크가 있으면 OAuth 토큰을 확인."""
+) -> tuple[str | None, str | None]:
+    """Google/Notion 링크가 있으면 각 OAuth(또는 Notion env) 토큰을 확보."""
     full_raw = (pending.get("full_text") or "").strip()
     doc_links = extract_document_links(full_raw)
+    notion_links = extract_notion_links(full_raw)
     sid = get_gdrive_session_id(request)
-    access_token: str | None = None
-    if sid:
+
+    gdrive_token: str | None = None
+    if sid and doc_links:
         try:
-            access_token, _ = await ensure_gdrive_access_token(sid)
+            gdrive_token, _ = await ensure_gdrive_access_token(sid)
         except HTTPException:
-            access_token = None
+            gdrive_token = None
         except Exception:
-            access_token = None
-    if doc_links and not access_token:
+            gdrive_token = None
+    if doc_links and not gdrive_token:
         raise HTTPException(
             status_code=412,
             detail={
@@ -85,7 +89,31 @@ async def _ensure_token_for_docs(
                 "link_count": len(doc_links),
             },
         )
-    return access_token
+
+    notion_token: str | None = None
+    if notion_links:
+        if sid:
+            try:
+                notion_token, _ = await ensure_notion_access_token(sid)
+            except HTTPException:
+                notion_token = None
+            except Exception:
+                notion_token = None
+        if not notion_token:
+            notion_token = resolve_notion_token()
+        if not notion_token:
+            raise HTTPException(
+                status_code=412,
+                detail={
+                    "code": "notion_auth_required",
+                    "message": (
+                        "Notion 연결이 필요합니다. Notion 연결 후 승인 시 "
+                        "페이지 피커에서 읽을 페이지(또는 상위 페이지)를 선택해주세요."
+                    ),
+                    "link_count": len(notion_links),
+                },
+            )
+    return gdrive_token, notion_token
 
 
 def _dedupe_files_by_url(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -144,12 +172,12 @@ def _history_category_with_override(
     return _history_category(pending, refined_category)
 
 
-async def _insert_refined_history_with_token(
+async def _resolve_doc_content(
     pending: dict[str, Any],
     access_token: str | None,
-    *,
-    category_override: str | None = None,
-) -> int:
+    notion_token: str | None = None,
+) -> str | None:
+    """Google/Notion 문서 읽기만 수행. GEMINI_SEMAPHORE 밖에서 호출."""
     full_raw = pending.get("full_text") or ""
     if isinstance(full_raw, str):
         full_raw = full_raw.strip()
@@ -158,6 +186,7 @@ async def _insert_refined_history_with_token(
 
     doc_links = extract_document_links(full_raw)
     notion_links = extract_notion_links(full_raw)
+    notion_cap = _max_notion_links()
     parts_doc: list[str] = []
 
     if doc_links:
@@ -190,11 +219,16 @@ async def _insert_refined_history_with_token(
                 )
 
     if notion_links:
-        print(f"[approve] reading {len(notion_links)} notion links (using {min(len(notion_links), 5)})", flush=True)
-        for link in notion_links[:5]:
+        print(
+            f"[approve] reading {len(notion_links)} notion links (using {min(len(notion_links), notion_cap)})",
+            flush=True,
+        )
+        for link in notion_links[:notion_cap]:
             url = link["url"]
             try:
-                blob = await asyncio.to_thread(read_notion_page, url)
+                blob = await asyncio.to_thread(
+                    read_notion_page, url, notion_token=notion_token
+                )
             except Exception as e:
                 print(f"[approve] notion read failed {url}: {e}", flush=True)
                 raise RuntimeError(f"Notion 페이지 읽기 실패 ({url}): {e}") from e
@@ -202,11 +236,22 @@ async def _insert_refined_history_with_token(
                 parts_doc.append(f"[notion {url}]\n{blob}")
                 print(f"[approve] notion ok {url} ({len(blob)} chars)", flush=True)
             else:
-                # Notion 빈 페이지: integration 접근은 됐으나 본문 없음 → soft-fail(적재 계속).
-                # Google은 None이 권한/미지원/읽기 실패이므로 hard-fail.
                 print(f"[approve] notion empty page {url}", flush=True)
 
-    doc_content = "\n\n---\n\n".join(parts_doc) if parts_doc else None
+    return "\n\n---\n\n".join(parts_doc) if parts_doc else None
+
+
+async def _insert_refined_history(
+    pending: dict[str, Any],
+    *,
+    doc_content: str | None,
+    category_override: str | None = None,
+) -> int:
+    full_raw = pending.get("full_text") or ""
+    if isinstance(full_raw, str):
+        full_raw = full_raw.strip()
+    else:
+        full_raw = str(full_raw or "")
 
     refined = await asyncio.to_thread(refine_with_document, full_raw, doc_content)
 
@@ -289,25 +334,28 @@ async def approve(
     if pending.get("status") != "대기중":
         raise HTTPException(status_code=400, detail="pending approval is not pending")
 
-    access_token = await _ensure_token_for_docs(pending, request)
+    gdrive_token, notion_token = await _ensure_tokens_for_docs(pending, request)
 
     update_pending_status(id, "처리중")
 
     async def bg_refine() -> None:
-        async with GEMINI_SEMAPHORE:
-            try:
-                row = get_pending_approval_by_id(id)
-                if not row or row.get("status") != "처리중":
-                    return
-                history_id = await _insert_refined_history_with_token(
+        try:
+            row = get_pending_approval_by_id(id)
+            if not row or row.get("status") != "처리중":
+                return
+            doc_content = await _resolve_doc_content(
+                row, gdrive_token, notion_token=notion_token
+            )
+            async with GEMINI_SEMAPHORE:
+                history_id = await _insert_refined_history(
                     row,
-                    access_token,
+                    doc_content=doc_content,
                     category_override=body.category,
                 )
-                update_pending_approved(id, history_id)
-            except Exception as e:
-                print(f"[bg_refine] 실패: {e}", flush=True)
-                update_pending_status(id, "대기중")
+            update_pending_approved(id, history_id)
+        except Exception as e:
+            print(f"[bg_refine] 실패: {e}", flush=True)
+            update_pending_status(id, "대기중")
 
     return JSONResponse(
         {"ok": True, "status": "processing"},
@@ -365,29 +413,32 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
     today = date.today().isoformat()
 
     if action == "use_new":
-        access_token = await _ensure_token_for_docs(pending, request)
+        gdrive_token, notion_token = await _ensure_tokens_for_docs(pending, request)
         old_id = pending.get("conflict_old_history_id")
 
         update_pending_status(id, "처리중")
 
         async def bg_use_new() -> None:
-            async with GEMINI_SEMAPHORE:
-                try:
-                    row = get_pending_approval_by_id(id)
-                    if not row or row.get("status") != "처리중":
-                        return
-                    history_id = await _insert_refined_history_with_token(
+            try:
+                row = get_pending_approval_by_id(id)
+                if not row or row.get("status") != "처리중":
+                    return
+                doc_content = await _resolve_doc_content(
+                    row, gdrive_token, notion_token=notion_token
+                )
+                async with GEMINI_SEMAPHORE:
+                    history_id = await _insert_refined_history(
                         row,
-                        access_token,
+                        doc_content=doc_content,
                         category_override=body.category,
                     )
-                    if old_id:
-                        update_history_status(int(old_id), "변경됨", today)
-                        invalidate_system_cache()
-                    update_pending_approved(id, history_id)
-                except Exception as e:
-                    print(f"[bg_use_new] 실패: {e}", flush=True)
-                    update_pending_status(id, "대기중")
+                if old_id:
+                    update_history_status(int(old_id), "변경됨", today)
+                    invalidate_system_cache()
+                update_pending_approved(id, history_id)
+            except Exception as e:
+                print(f"[bg_use_new] 실패: {e}", flush=True)
+                update_pending_status(id, "대기중")
 
         return JSONResponse(
             {"ok": True, "action": "use_new", "status": "processing"},
@@ -399,24 +450,27 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
         return {"ok": True, "action": "keep_old"}
 
     if action == "keep_both":
-        access_token = await _ensure_token_for_docs(pending, request)
+        gdrive_token, notion_token = await _ensure_tokens_for_docs(pending, request)
         update_pending_status(id, "처리중")
 
         async def bg_keep_both() -> None:
-            async with GEMINI_SEMAPHORE:
-                try:
-                    row = get_pending_approval_by_id(id)
-                    if not row or row.get("status") != "처리중":
-                        return
-                    history_id = await _insert_refined_history_with_token(
+            try:
+                row = get_pending_approval_by_id(id)
+                if not row or row.get("status") != "처리중":
+                    return
+                doc_content = await _resolve_doc_content(
+                    row, gdrive_token, notion_token=notion_token
+                )
+                async with GEMINI_SEMAPHORE:
+                    history_id = await _insert_refined_history(
                         row,
-                        access_token,
+                        doc_content=doc_content,
                         category_override=body.category,
                     )
-                    update_pending_approved(id, history_id)
-                except Exception as e:
-                    print(f"[bg_keep_both] 실패: {e}", flush=True)
-                    update_pending_status(id, "대기중")
+                update_pending_approved(id, history_id)
+            except Exception as e:
+                print(f"[bg_keep_both] 실패: {e}", flush=True)
+                update_pending_status(id, "대기중")
 
         return JSONResponse(
             {"ok": True, "action": "keep_both", "status": "processing"},

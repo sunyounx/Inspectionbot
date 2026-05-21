@@ -9,10 +9,30 @@ import httpx
 
 _NOTION_VERSION = "2022-06-28"
 _MAX_CHARS = 10_000
+_MAX_LINKS_DEFAULT = 5
 _UUID_HYPHEN_RE = re.compile(
     r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
     re.I,
 )
+
+
+class NotionPermissionError(RuntimeError):
+    """401/403 — integration 미공유 또는 토큰 무효."""
+
+
+class NotionNotFoundError(RuntimeError):
+    """404 — 페이지 없음."""
+
+
+def _should_try_playwright(err: BaseException) -> bool:
+    return isinstance(err, (NotionPermissionError, NotionNotFoundError))
+
+
+def _max_notion_links() -> int:
+    try:
+        return max(1, min(int(os.getenv("NOTION_MAX_LINKS", str(_MAX_LINKS_DEFAULT))), 20))
+    except ValueError:
+        return _MAX_LINKS_DEFAULT
 
 
 def extract_page_id(url: str) -> str:
@@ -38,8 +58,17 @@ def extract_page_id(url: str) -> str:
     raise RuntimeError("Notion URL에서 page id를 추출할 수 없습니다.")
 
 
-def _notion_token() -> str:
+def _env_notion_token() -> str:
     return os.getenv("NOTION_API_TOKEN", "").strip()
+
+
+def resolve_notion_token(*, session_token: str | None = None) -> str | None:
+    """OAuth 세션 토큰 우선, 없으면 NOTION_API_TOKEN(env)."""
+    t = (session_token or "").strip()
+    if t:
+        return t
+    env = _env_notion_token()
+    return env or None
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -111,11 +140,12 @@ def _block_text(block: dict[str, Any]) -> str:
 
 def _raise_for_status(resp: httpx.Response, *, context: str) -> None:
     if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Notion 권한 오류: integration에 페이지가 공유되었는지, NOTION_API_TOKEN이 유효한지 확인하세요. ({context})"
+        raise NotionPermissionError(
+            "Notion 권한 오류: 로그인 시 페이지 피커에서 해당 페이지(또는 상위 페이지)를 선택했는지 확인하세요. "
+            f"({context})"
         )
     if resp.status_code == 404:
-        raise RuntimeError(f"Notion 페이지를 찾을 수 없습니다. ({context})")
+        raise NotionNotFoundError(f"Notion 페이지를 찾을 수 없습니다. ({context})")
     if resp.status_code >= 400:
         detail = ""
         try:
@@ -180,26 +210,14 @@ def _collect_blocks(
     return total_chars
 
 
-def read_notion_page(url: str) -> str | None:
-    """Notion 공식 API로만 페이지 본문을 읽는다. integration 공유 + NOTION_API_TOKEN 필수."""
-    token = _notion_token()
-    if not token:
-        raise RuntimeError(
-            "NOTION_API_TOKEN이 설정되지 않았습니다. .env에 토큰을 추가한 뒤 다시 시도하세요."
-        )
-
+def _read_notion_page_api(url: str, token: str) -> str | None:
     page_id = extract_page_id(url)
     api_id = _api_id(page_id)
 
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            _get_json(client, f"/pages/{api_id}", token)
-            lines: list[str] = []
-            _collect_blocks(client, api_id, token, lines, 0)
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError(f"Notion 페이지 읽기 실패: {e}") from e
+    with httpx.Client(timeout=30.0) as client:
+        _get_json(client, f"/pages/{api_id}", token)
+        lines: list[str] = []
+        _collect_blocks(client, api_id, token, lines, 0)
 
     body = "\n".join(lines).strip()
     if not body:
@@ -207,3 +225,39 @@ def read_notion_page(url: str) -> str | None:
     if len(body) > _MAX_CHARS:
         body = body[:_MAX_CHARS]
     return body
+
+
+def _read_notion_page_playwright(url: str) -> str:
+    from services.notion_playwright import scrape_public_notion_page
+
+    return scrape_public_notion_page(url)
+
+
+def read_notion_page(url: str, *, notion_token: str | None = None) -> str | None:
+    """Notion 본문: API 우선(OAuth 세션 > env), 403/404 시 Playwright. 토큰 없으면 Playwright만."""
+    token = resolve_notion_token(session_token=notion_token)
+    api_err: BaseException | None = None
+
+    if token:
+        try:
+            return _read_notion_page_api(url, token)
+        except (NotionPermissionError, NotionNotFoundError) as e:
+            api_err = e
+            print(f"[notion api] failed, trying playwright: {url}: {e}", flush=True)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Notion API 페이지 읽기 실패: {e}") from e
+    else:
+        print(f"[notion] no token, playwright only: {url}", flush=True)
+
+    try:
+        body = _read_notion_page_playwright(url)
+        print(f"[notion playwright] ok {url} ({len(body)} chars)", flush=True)
+        return body
+    except Exception as pw_err:
+        if api_err is not None:
+            raise RuntimeError(
+                f"Notion API 실패: {api_err}; Playwright 읽기도 실패: {pw_err}"
+            ) from pw_err
+        raise RuntimeError(f"Notion Playwright 읽기 실패: {pw_err}") from pw_err

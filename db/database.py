@@ -78,6 +78,22 @@ def init_db() -> None:
             cur.execute(
                 "ALTER TABLE IF EXISTS pending_approvals ADD COLUMN IF NOT EXISTS approved_history_id INTEGER"
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notion_oauth_tokens (
+                    id SERIAL PRIMARY KEY,
+                    session_id TEXT NOT NULL UNIQUE,
+                    access_token TEXT NOT NULL,
+                    refresh_token TEXT,
+                    workspace_id TEXT,
+                    workspace_name TEXT,
+                    bot_id TEXT,
+                    owner_user_id TEXT,
+                    owner_email TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+                """
+            )
             # multi-user gdrive oauth tokens: migrate old table(id=1) → session_id keyed
             cur.execute(
                 """
@@ -1140,6 +1156,82 @@ def clear_gdrive_oauth_token(session_id: str) -> None:
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM gdrive_oauth_tokens WHERE session_id = %s", (session_id,))
+        conn.commit()
+
+
+def upsert_notion_oauth_token(
+    session_id: str,
+    access_token: str,
+    refresh_token: str | None,
+    workspace_id: str | None,
+    workspace_name: str | None,
+    bot_id: str | None,
+    owner_user_id: str | None,
+    owner_email: str | None,
+) -> int:
+    session_id = (session_id or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required")
+    access_token = (access_token or "").strip()
+    if not access_token:
+        raise ValueError("access_token is required")
+
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO notion_oauth_tokens (
+                    session_id, access_token, refresh_token,
+                    workspace_id, workspace_name, bot_id, owner_user_id, owner_email
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (session_id) DO UPDATE
+                SET access_token = EXCLUDED.access_token,
+                    refresh_token = COALESCE(EXCLUDED.refresh_token, notion_oauth_tokens.refresh_token),
+                    workspace_id = EXCLUDED.workspace_id,
+                    workspace_name = EXCLUDED.workspace_name,
+                    bot_id = EXCLUDED.bot_id,
+                    owner_user_id = EXCLUDED.owner_user_id,
+                    owner_email = EXCLUDED.owner_email
+                RETURNING id
+                """,
+                (
+                    session_id,
+                    access_token,
+                    refresh_token,
+                    workspace_id,
+                    workspace_name,
+                    bot_id,
+                    owner_user_id,
+                    owner_email,
+                ),
+            )
+            row_id = int(cur.fetchone()["id"])
+        conn.commit()
+        return row_id
+
+
+def get_notion_oauth_token(session_id: str) -> dict[str, Any] | None:
+    session_id = (session_id or "").strip()
+    if not session_id:
+        return None
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM notion_oauth_tokens WHERE session_id = %s ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def clear_notion_oauth_token(session_id: str) -> None:
+    session_id = (session_id or "").strip()
+    if not session_id:
+        return
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM notion_oauth_tokens WHERE session_id = %s", (session_id,))
         conn.commit()
 
 

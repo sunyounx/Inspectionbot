@@ -14,8 +14,9 @@ from routers import approval
 from routers import copybank
 from routers import figma
 from routers import files
-from routers import gdrive, history, inspect, manual
+from routers import gdrive, history, inspect, manual, notion_oauth
 from services.figma_polling import figma_poll_loop
+from services.notion_playwright import start_playwright_pool, stop_playwright_pool
 from services.polling import poll_slack_loop
 
 
@@ -23,6 +24,11 @@ from services.polling import poll_slack_loop
 async def lifespan(_app: FastAPI):
     await asyncio.to_thread(init_db)
     print("[startup] init_db ok", flush=True)
+
+    try:
+        await asyncio.to_thread(start_playwright_pool)
+    except Exception as e:
+        print(f"[startup] notion playwright pool failed (lazy retry on read): {e}", flush=True)
 
     poll_tasks: list[asyncio.Task[None]] = []
     try:
@@ -38,6 +44,11 @@ async def lifespan(_app: FastAPI):
         task.cancel()
     if poll_tasks:
         await asyncio.gather(*poll_tasks, return_exceptions=True)
+
+    try:
+        await asyncio.to_thread(stop_playwright_pool)
+    except Exception as e:
+        print(f"[shutdown] notion playwright pool failed: {e}", flush=True)
 
 
 app = FastAPI(title="올더뮤 검수봇 v3", lifespan=lifespan)
@@ -57,6 +68,7 @@ app.include_router(gdrive.router)
 app.include_router(figma.router)
 app.include_router(copybank.router)
 app.include_router(manual.router)
+app.include_router(notion_oauth.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

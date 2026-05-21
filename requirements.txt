@@ -5,6 +5,7 @@ google-api-python-client
 google-auth
 google-genai
 httpx
+playwright
 openpyxl
 Pillow
 psycopg2-binary

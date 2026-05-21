@@ -25,6 +25,7 @@ const imagePreview = document.getElementById("imagePreview");
 const sendBtn = document.getElementById("sendBtn");
 
 const gdriveComposerStatus = document.getElementById("gdriveComposerStatus");
+const notionComposerStatus = document.getElementById("notionComposerStatus");
 
 const historyList = document.getElementById("historyList");
 const historyFilters = document.getElementById("historyFilters");
@@ -855,11 +856,19 @@ async function postJsonExpectOk(path, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = data?.detail;
-    if (res.status === 412 && detail && typeof detail === "object" && detail.code === "gdrive_auth_required") {
-      showGdriveAuthModal(detail);
-      const err = new Error(detail.message || "Google Drive 로그인 필요");
-      err.code = "gdrive_auth_required";
-      throw err;
+    if (res.status === 412 && detail && typeof detail === "object") {
+      if (detail.code === "gdrive_auth_required") {
+        showGdriveAuthModal(detail);
+        const err = new Error(detail.message || "Google Drive 로그인 필요");
+        err.code = "gdrive_auth_required";
+        throw err;
+      }
+      if (detail.code === "notion_auth_required") {
+        showNotionAuthModal(detail);
+        const err = new Error(detail.message || "Notion 연결 필요");
+        err.code = "notion_auth_required";
+        throw err;
+      }
     }
     let msg;
     if (typeof detail === "string") msg = detail;
@@ -885,6 +894,26 @@ document.getElementById("gdriveAuthLoginBtn")?.addEventListener("click", () => {
 document.getElementById("gdriveAuthCancelBtn")?.addEventListener("click", () => {
   document.getElementById("gdriveAuthModal")?.classList.add("hidden");
 });
+
+function showNotionAuthModal(detail) {
+  const m = document.getElementById("notionAuthModal");
+  const msg = document.getElementById("notionAuthModalMsg");
+  if (msg && detail?.link_count != null) {
+    msg.textContent = `Notion 링크 ${detail.link_count}건 — 연결 시 페이지 피커에서 읽을 페이지(또는 Brand OS 등 상위 페이지)를 선택한 뒤 다시 승인해주세요.`;
+  }
+  m?.classList.remove("hidden");
+}
+
+document.getElementById("notionAuthCancelBtn")?.addEventListener("click", () => {
+  document.getElementById("notionAuthModal")?.classList.add("hidden");
+});
+
+const notionModalEl = document.getElementById("notionAuthModal");
+if (notionModalEl) {
+  notionModalEl.addEventListener("click", (e) => {
+    if (e.target === notionModalEl) notionModalEl.classList.add("hidden");
+  });
+}
 
 const gdriveModalEl = document.getElementById("gdriveAuthModal");
 if (gdriveModalEl) {
@@ -1528,6 +1557,44 @@ async function checkGdriveAuthStatus() {
   }
 }
 
+function renderNotionComposerStatus(loggedIn, email, workspace) {
+  if (!notionComposerStatus) return;
+  if (loggedIn) {
+    const who = email || workspace || "연결됨";
+    notionComposerStatus.innerHTML = `Notion ${escapeHtml(who)} · <button type="button" class="btn btn-ghost btn-sm notion-logout-btn">연결 해제</button>`;
+  } else {
+    notionComposerStatus.innerHTML =
+      '<a class="gdrive-composer-link" href="/api/notion/oauth/login">Notion 연결</a> (승인 시 Notion 링크 읽기)';
+  }
+}
+
+async function checkNotionAuthStatus() {
+  try {
+    const st = await apiJson("GET", "/api/notion/oauth/status", null);
+    renderNotionComposerStatus(
+      Boolean(st?.logged_in),
+      st?.owner_email,
+      st?.workspace_name
+    );
+  } catch {
+    renderNotionComposerStatus(false);
+  }
+}
+
+if (notionComposerStatus) {
+  notionComposerStatus.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".notion-logout-btn");
+    if (!btn) return;
+    e.preventDefault();
+    try {
+      await apiJson("DELETE", "/api/notion/oauth/logout", null);
+    } catch {
+      // ignore
+    }
+    renderNotionComposerStatus(false);
+  });
+}
+
 if (gdriveComposerStatus) {
   gdriveComposerStatus.addEventListener("click", async (e) => {
     const btn = e.target.closest(".gdrive-logout-btn");
@@ -1932,7 +1999,7 @@ function wireAdminModalActions(item) {
       await loadAdmin();
       closeAdminModal();
     } catch (e) {
-      if (e.code === "gdrive_auth_required") {
+      if (e.code === "gdrive_auth_required" || e.code === "notion_auth_required") {
         setAdminModalButtonsBusy(false);
         approve.textContent = prevApproveLabel;
         return;
@@ -1986,7 +2053,7 @@ function wireAdminModalActions(item) {
         await loadAdmin();
         closeAdminModal();
       } catch (e) {
-        if (e.code === "gdrive_auth_required") {
+        if (e.code === "gdrive_auth_required" || e.code === "notion_auth_required") {
           setAdminModalButtonsBusy(false);
           useNew.textContent = prev;
           return;
@@ -2033,7 +2100,7 @@ function wireAdminModalActions(item) {
         await loadAdmin();
         closeAdminModal();
       } catch (e) {
-        if (e.code === "gdrive_auth_required") {
+        if (e.code === "gdrive_auth_required" || e.code === "notion_auth_required") {
           setAdminModalButtonsBusy(false);
           keepBoth.textContent = prev;
           return;
@@ -2669,6 +2736,11 @@ async function submitManualIngest() {
         manualStatusEl.textContent = "Google 로그인 후 다시 시도해주세요.";
         manualStatusEl.className = "admin-status";
       }
+    } else if (e.code === "notion_auth_required") {
+      if (manualStatusEl) {
+        manualStatusEl.textContent = "Notion 연결 후 다시 시도해주세요.";
+        manualStatusEl.className = "admin-status";
+      }
     } else if (manualStatusEl) {
       manualStatusEl.textContent = `실패: ${e.message}`;
       manualStatusEl.className = "admin-status error";
@@ -2837,6 +2909,10 @@ if (adminLoadMoreBtn) {
     document.body.classList.add("auth-authenticated");
   } else {
     await checkGdriveAuthStatus();
+    await checkNotionAuthStatus();
+    if (qs.get("notion_oauth") === "ok") {
+      history.replaceState({}, "", window.location.pathname + window.location.hash);
+    }
   }
   addBubble(
     chatLog,

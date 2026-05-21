@@ -185,6 +185,19 @@ CREATE TABLE IF NOT EXISTS gdrive_oauth_tokens (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS notion_oauth_tokens (
+    id SERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL UNIQUE,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    workspace_id TEXT,
+    workspace_name TEXT,
+    bot_id TEXT,
+    owner_user_id TEXT,
+    owner_email TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS figma_comment_images (
     id SERIAL PRIMARY KEY,
     file_key TEXT NOT NULL,

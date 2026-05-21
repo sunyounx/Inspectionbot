@@ -7,7 +7,13 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from services.notion_service import extract_page_id, read_notion_page
+from services.notion_service import (
+    NotionNotFoundError,
+    NotionPermissionError,
+    extract_page_id,
+    read_notion_page,
+    _should_try_playwright,
+)
 from services.slack_service import extract_notion_links
 
 
@@ -213,8 +219,11 @@ class TestReadNotionPage(unittest.TestCase):
         self.assertIsNone(read_notion_page(self._URL))
 
     @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
+    @patch("services.notion_service._read_notion_page_playwright")
     @patch("services.notion_service.httpx.Client")
-    def test_403_raises(self, mock_client_cls: MagicMock) -> None:
+    def test_403_raises_after_playwright_fails(
+        self, mock_client_cls: MagicMock, mock_pw: MagicMock
+    ) -> None:
         client = MagicMock()
         resp = MagicMock(status_code=403)
         resp.json.return_value = {"message": "forbidden"}
@@ -222,21 +231,28 @@ class TestReadNotionPage(unittest.TestCase):
         client.__enter__.return_value = client
         client.__exit__.return_value = False
         mock_client_cls.return_value = client
+        mock_pw.side_effect = RuntimeError("pw fail")
 
         with self.assertRaises(RuntimeError) as ctx:
             read_notion_page(self._URL)
         self.assertIn("권한", str(ctx.exception))
-        mock_client_cls.return_value.get.assert_called_once()
+        self.assertIn("pw fail", str(ctx.exception))
+        mock_pw.assert_called_once_with(self._URL)
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_no_token_raises_without_http(self) -> None:
-        with self.assertRaises(RuntimeError) as ctx:
-            read_notion_page(self._URL)
-        self.assertIn("NOTION_API_TOKEN", str(ctx.exception))
+    @patch("services.notion_service._read_notion_page_playwright")
+    def test_no_token_uses_playwright(self, mock_pw: MagicMock) -> None:
+        mock_pw.return_value = "playwright body"
+        text = read_notion_page(self._URL)
+        self.assertEqual(text, "playwright body")
+        mock_pw.assert_called_once_with(self._URL)
 
     @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
+    @patch("services.notion_service._read_notion_page_playwright")
     @patch("services.notion_service.httpx.Client")
-    def test_api_403_does_not_fallback(self, mock_client_cls: MagicMock) -> None:
+    def test_api_403_falls_back_to_playwright(
+        self, mock_client_cls: MagicMock, mock_pw: MagicMock
+    ) -> None:
         client = MagicMock()
         resp = MagicMock(status_code=403)
         resp.json.return_value = {"message": "forbidden"}
@@ -244,135 +260,87 @@ class TestReadNotionPage(unittest.TestCase):
         client.__enter__.return_value = client
         client.__exit__.return_value = False
         mock_client_cls.return_value = client
+        mock_pw.return_value = "Playwright body text here with enough length for validation"
 
-        with self.assertRaises(RuntimeError) as ctx:
-            read_notion_page(self._URL)
-        self.assertIn("권한", str(ctx.exception))
-        self.assertNotIn("공개", str(ctx.exception))
-        mock_client_cls.assert_called_once()
-        self.assertTrue(
-            mock_client_cls.return_value.get.call_args[0][0].startswith("https://api.notion.com/")
-        )
+        text = read_notion_page(self._URL)
+        self.assertIn("Playwright", text)
+        mock_pw.assert_called_once_with(self._URL)
+
+    def test_should_try_playwright_types(self) -> None:
+        self.assertTrue(_should_try_playwright(NotionPermissionError("x")))
+        self.assertTrue(_should_try_playwright(NotionNotFoundError("x")))
+        self.assertFalse(_should_try_playwright(RuntimeError("network")))
 
 
-class TestApprovalHardFail(unittest.IsolatedAsyncioTestCase):
-    @patch("routers.approval.refine_with_document")
-    @patch("routers.approval.insert_history")
+class TestResolveDocContent(unittest.IsolatedAsyncioTestCase):
     @patch("routers.approval.read_notion_page")
     @patch("routers.approval.read_workspace_document")
     async def test_google_none_fails(
-        self,
-        mock_read_doc: MagicMock,
-        mock_read_notion: MagicMock,
-        mock_insert: MagicMock,
-        mock_refine: MagicMock,
+        self, mock_read_doc: MagicMock, mock_read_notion: MagicMock
     ) -> None:
-        from routers.approval import _insert_refined_history_with_token
+        from routers.approval import _resolve_doc_content
 
         mock_read_doc.return_value = None
-        pending = {
-            "full_text": "https://docs.google.com/document/d/abc123/edit",
-        }
+        pending = {"full_text": "https://docs.google.com/document/d/abc123/edit"}
         with self.assertRaises(RuntimeError):
-            await _insert_refined_history_with_token(pending, "token")
-        mock_insert.assert_not_called()
+            await _resolve_doc_content(pending, "token")
 
-    @patch("routers.approval.refine_with_document")
-    @patch("routers.approval.insert_history")
     @patch("routers.approval.read_notion_page")
     @patch("routers.approval.read_workspace_document")
     async def test_google_exception_fails(
-        self,
-        mock_read_doc: MagicMock,
-        mock_read_notion: MagicMock,
-        mock_insert: MagicMock,
-        mock_refine: MagicMock,
+        self, mock_read_doc: MagicMock, mock_read_notion: MagicMock
     ) -> None:
-        from routers.approval import _insert_refined_history_with_token
+        from routers.approval import _resolve_doc_content
 
         mock_read_doc.side_effect = ValueError("boom")
-        pending = {
-            "full_text": "https://docs.google.com/document/d/abc123/edit",
-        }
+        pending = {"full_text": "https://docs.google.com/document/d/abc123/edit"}
         with self.assertRaises(RuntimeError):
-            await _insert_refined_history_with_token(pending, "token")
-        mock_insert.assert_not_called()
+            await _resolve_doc_content(pending, "token")
 
-    @patch("routers.approval.refine_with_document")
-    @patch("routers.approval.insert_history")
     @patch("routers.approval.read_notion_page")
     @patch("routers.approval.read_workspace_document")
     async def test_notion_exception_fails(
-        self,
-        mock_read_doc: MagicMock,
-        mock_read_notion: MagicMock,
-        mock_insert: MagicMock,
-        mock_refine: MagicMock,
+        self, mock_read_doc: MagicMock, mock_read_notion: MagicMock
     ) -> None:
-        from routers.approval import _insert_refined_history_with_token
+        from routers.approval import _resolve_doc_content
 
         mock_read_notion.side_effect = RuntimeError("notion fail")
         pending = {
             "full_text": "https://www.notion.so/ws/Page-abc123def4567890abcdef1234567890",
         }
         with self.assertRaises(RuntimeError):
-            await _insert_refined_history_with_token(pending, None)
-        mock_insert.assert_not_called()
+            await _resolve_doc_content(pending, None)
 
-    @patch("routers.approval.refine_with_document")
-    @patch("routers.approval.insert_history")
-    @patch("routers.approval.invalidate_system_cache")
     @patch("routers.approval.read_notion_page")
     @patch("routers.approval.read_workspace_document")
     async def test_both_docs_merged(
-        self,
-        mock_read_doc: MagicMock,
-        mock_read_notion: MagicMock,
-        mock_invalidate: MagicMock,
-        mock_insert: MagicMock,
-        mock_refine: MagicMock,
+        self, mock_read_doc: MagicMock, mock_read_notion: MagicMock
     ) -> None:
-        from routers.approval import _insert_refined_history_with_token
-        from services.gemini_service import RefinedFeedback
+        from routers.approval import _resolve_doc_content
 
         mock_read_doc.return_value = "google body"
         mock_read_notion.return_value = "notion body"
-        mock_refine.return_value = RefinedFeedback(
-            date="2026-01-01",
-            topic="t",
-            summary="s",
-            scope="전체",
-            type="규칙",
-            original_quote="q",
-            category="크리에이티브",
-        )
-        mock_insert.return_value = 99
-
         g_url = "https://docs.google.com/document/d/abc123def4567890abcdef12345678/edit"
         n_url = "https://www.notion.so/ws/Page-abc123def4567890abcdef1234567890"
-        pending = {"full_text": f"{g_url}\n{n_url}"}
+        doc_content = await _resolve_doc_content(
+            {"full_text": f"{g_url}\n{n_url}"}, "token"
+        )
+        self.assertIn("google body", doc_content or "")
+        self.assertIn("notion body", doc_content or "")
+        self.assertIn("---", doc_content or "")
 
-        await _insert_refined_history_with_token(pending, "token")
 
-        doc_content = mock_refine.call_args[0][1]
-        self.assertIn("google body", doc_content)
-        self.assertIn("notion body", doc_content)
-        self.assertIn("---", doc_content)
-
+class TestInsertRefinedHistory(unittest.IsolatedAsyncioTestCase):
     @patch("routers.approval.refine_with_document")
     @patch("routers.approval.insert_history")
     @patch("routers.approval.invalidate_system_cache")
-    @patch("routers.approval.read_notion_page")
-    @patch("routers.approval.read_workspace_document")
     async def test_no_links_proceeds(
         self,
-        mock_read_doc: MagicMock,
-        mock_read_notion: MagicMock,
         mock_invalidate: MagicMock,
         mock_insert: MagicMock,
         mock_refine: MagicMock,
     ) -> None:
-        from routers.approval import _insert_refined_history_with_token
+        from routers.approval import _insert_refined_history
         from services.gemini_service import RefinedFeedback
 
         mock_refine.return_value = RefinedFeedback(
@@ -386,10 +354,8 @@ class TestApprovalHardFail(unittest.IsolatedAsyncioTestCase):
         )
         mock_insert.return_value = 1
 
-        await _insert_refined_history_with_token({"full_text": "plain text"}, None)
+        await _insert_refined_history({"full_text": "plain text"}, doc_content=None)
 
-        mock_read_doc.assert_not_called()
-        mock_read_notion.assert_not_called()
         self.assertIsNone(mock_refine.call_args[0][1])
         mock_insert.assert_called_once()
 

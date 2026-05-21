@@ -6,7 +6,11 @@ from pydantic import BaseModel
 
 from db.database import get_gdrive_oauth_token
 from models.schemas import FEEDBACK_CATEGORY
-from routers.approval import _ensure_token_for_docs, _insert_refined_history_with_token
+from routers.approval import (
+    _ensure_tokens_for_docs,
+    _insert_refined_history,
+    _resolve_doc_content,
+)
 from services.gdrive_auth import get_gdrive_session_id
 from services.gemini_service import GEMINI_SEMAPHORE
 from services.slack_service import extract_document_links, extract_notion_links
@@ -59,20 +63,23 @@ async def manual_ingest(body: ManualIngestBody, request: Request):
         "category": body.category or "미분류",
     }
 
-    access_token = await _ensure_token_for_docs(pending_dict, request)
+    gdrive_token, notion_token = await _ensure_tokens_for_docs(pending_dict, request)
     doc_count = len(extract_document_links(text))
     notion_count = len(extract_notion_links(text))
 
-    async with GEMINI_SEMAPHORE:
-        try:
-            history_id = await _insert_refined_history_with_token(
+    try:
+        doc_content = await _resolve_doc_content(
+            pending_dict, gdrive_token, notion_token=notion_token
+        )
+        async with GEMINI_SEMAPHORE:
+            history_id = await _insert_refined_history(
                 pending_dict,
-                access_token,
+                doc_content=doc_content,
                 category_override=body.category,
             )
-        except Exception as e:
-            print(f"[manual] refine/insert failed: {e}", flush=True)
-            raise HTTPException(status_code=500, detail=f"refine 또는 적재 실패: {e}")
+    except Exception as e:
+        print(f"[manual] refine/insert failed: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"refine 또는 적재 실패: {e}")
 
     return {
         "ok": True,

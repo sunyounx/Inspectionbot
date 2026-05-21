@@ -65,6 +65,7 @@
               <input id="imageInput" type="file" class="file-input" multiple accept="image/*,video/*" />
               <div class="composer-main">
                 <div class="gdrive-composer-status" id="gdriveComposerStatus" aria-live="polite"></div>
+                <div class="gdrive-composer-status" id="notionComposerStatus" aria-live="polite"></div>
                 <div id="imagePreview" class="image-preview hidden"></div>
                 <textarea
                   id="textInput"
@@ -328,6 +329,19 @@
           <div class="admin-warn hidden" id="adminModalConflict"></div>
           <div class="modal-actions" id="adminModalActions"></div>
         </footer>
+      </div>
+    </div>
+
+    <div id="notionAuthModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="notionAuthModalTitle">
+      <div class="modal-card gdrive-auth-card">
+        <h3 class="modal-title" id="notionAuthModalTitle">Notion 연결 필요</h3>
+        <p id="notionAuthModalMsg" class="modal-body" style="margin-top:8px">
+          Notion 링크가 포함되어 있습니다. 연결 시 읽을 페이지를 선택해주세요.
+        </p>
+        <div class="modal-actions" style="margin-top:16px">
+          <a id="notionAuthLoginBtn" class="btn btn-primary btn-sm" href="/api/notion/oauth/login">Notion 연결</a>
+          <button type="button" id="notionAuthCancelBtn" class="btn btn-ghost btn-sm">취소</button>
+        </div>
       </div>
     </div>
 
