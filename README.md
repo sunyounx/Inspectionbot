@@ -22,18 +22,34 @@ This README would normally document whatever steps are necessary to get your app
 * Database configuration
   * 앱 스키마 기준 파일: `db/schema.sql` + 배포 시 `init_db()`의 `ALTER ... IF NOT EXISTS`
   * **Replit**: 마이그레이션은 배포 시 **개발 DB ↔ 프로덕션 DB** 구조 diff로 자동 생성됨 (`db/schema.sql`을 직접 읽지 않음)
-  * Replit에서 `DROP approved_history_id` 경고가 나오면 **적용하지 말 것** (승인 취소 기능에 필요)
-  * 근본 해결 — **개발 DB**와 Replit 스키마 정의를 코드와 맞추기:
-    1. Database → **Development** → SQL에서 실행:
+  * Replit에서 `DROP approved_history_id` 또는 `DROP notion_oauth_tokens` 경고가 나오면 **Approve 하지 말 것**
+  * 근본 해결 — **Development DB**에 코드와 맞는 구조를 먼저 만든 뒤 Deploy:
+    1. Database → **Development** → **SQL** 탭에서 실행:
        ```sql
        ALTER TABLE pending_approvals
          ADD COLUMN IF NOT EXISTS approved_history_id INTEGER;
+
+       CREATE TABLE IF NOT EXISTS notion_oauth_tokens (
+         id SERIAL PRIMARY KEY,
+         session_id TEXT NOT NULL UNIQUE,
+         access_token TEXT NOT NULL,
+         refresh_token TEXT,
+         workspace_id TEXT,
+         workspace_name TEXT,
+         bot_id TEXT,
+         owner_user_id TEXT,
+         owner_email TEXT,
+         created_at TIMESTAMP NOT NULL DEFAULT NOW()
+       );
        ```
-    2. Database → Schema / Tables → `pending_approvals`에 컬럼 추가:
-       - 이름: `approved_history_id`
-       - 타입: `INTEGER`
-       - nullable 허용 (NOT NULL 아님)
-    3. Deploy 후 마이그레이션에 `DROP approved_history_id`가 없는지 확인
+    2. (선택) Schema UI로 `notion_oauth_tokens` 테이블·`approved_history_id` 컬럼이 보이는지 확인
+    3. Deploy 미리보기에서 마이그레이션에 **DROP** 이 없는지 확인 후 Publish
+  * `DROP notion_oauth_tokens`를 적용하면 Notion OAuth 연결 정보가 전부 삭제되고 승인 시 Notion 읽기가 깨집니다.
+  * **Shell에서 마이그레이션** (Database SQL 패널 대신):
+    ```bash
+    python scripts/db_migrate.py
+    ```
+    Replit Shell에서는 프로젝트 루트에서 실행. `DATABASE_URL`은 Secrets에 있어야 합니다.
   * SQL은 Repl **Shell**이 아니라 Database 패널의 **SQL/Query** 탭에서 실행 (Shell에 붙이면 `bash: ALTER: command not found`)
 * How to run tests
 * Deployment instructions
