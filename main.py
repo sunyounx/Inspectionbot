@@ -25,10 +25,15 @@ async def lifespan(_app: FastAPI):
     await asyncio.to_thread(init_db)
     print("[startup] init_db ok", flush=True)
 
-    try:
-        await asyncio.to_thread(start_playwright_pool)
-    except Exception as e:
-        print(f"[startup] notion playwright pool failed (lazy retry on read): {e}", flush=True)
+    async def _warm_playwright_pool() -> None:
+        try:
+            await asyncio.to_thread(start_playwright_pool)
+            print("[startup] notion playwright pool ok", flush=True)
+        except Exception as e:
+            print(f"[startup] notion playwright pool failed (lazy on read): {e}", flush=True)
+
+    # 포트 오픈을 막지 않도록 await 하지 않음 (OAuth API → Playwright 폴백은 그대로)
+    playwright_task = asyncio.create_task(_warm_playwright_pool())
 
     poll_tasks: list[asyncio.Task[None]] = []
     try:
@@ -40,6 +45,9 @@ async def lifespan(_app: FastAPI):
 
     yield
 
+    playwright_task.cancel()
+    await asyncio.gather(playwright_task, return_exceptions=True)
+
     for task in poll_tasks:
         task.cancel()
     if poll_tasks:
@@ -49,7 +57,6 @@ async def lifespan(_app: FastAPI):
         await asyncio.to_thread(stop_playwright_pool)
     except Exception as e:
         print(f"[shutdown] notion playwright pool failed: {e}", flush=True)
-
 
 app = FastAPI(title="올더뮤 검수봇 v3", lifespan=lifespan)
 

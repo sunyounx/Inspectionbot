@@ -64,7 +64,7 @@
 
 - **Google OAuth ≠ Playwright 세션**
 - **Notion OAuth access_token**은 **API용**이지, Playwright에 넣을 브라우저 쿠키가 아님 → OAuth 도입 후에도 읽기는 **API 우선**이 맞다.
-- Playwright는 integration/OAuth 없이 **완전 공개** 페이지용 보조 수단으로 유지.
+- Playwright는 integration/OAuth 없이 **완전 공개** 페이지용 **2차 폴백**으로 유지 (코드: `read_notion_page` → API 실패 시 `_read_notion_page_playwright`). Replit Deploy는 포트 5000 선오픈을 위해 Playwright 풀만 **백그라운드** 워밍업.
 
 ---
 

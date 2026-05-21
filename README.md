@@ -14,7 +14,7 @@ This README would normally document whatever steps are necessary to get your app
 * Configuration
   * **Notion OAuth** (권장): `NOTION_OAUTH_CLIENT_ID`, `NOTION_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_REDIRECT_URI` — 웹 UI에서 Notion 연결 후 페이지 피커로 접근 허용.
   * `NOTION_API_TOKEN`: (선택) OAuth 없을 때 internal integration fallback.
-  * API 403/404 시 Playwright 자동 폴백. Replit: `playwright install chromium`.
+  * 읽기 순서: **Notion OAuth API** → 403/404 시 **Playwright** 자동 폴백. Replit build는 `playwright install` 실패해도 Deploy는 계속됨(실패 시 Shell에서 재설치).
   * Notion database 동기화, 댓글, 첨부파일 다운로드는 1차 범위에서 제외됩니다.
   * Google 문서 링크는 기존과 같이 관리자 Google Drive OAuth 로그인이 필요합니다.
   * 승인 파이프라인(`update_pending_approved`, `_resolve_doc_content`, `GEMINI_SEMAPHORE` 분리): [docs/approval-doc-read.md](docs/approval-doc-read.md)
