@@ -63,8 +63,20 @@ _MAX_SLACK_IMAGES = 3
 _ALLOWED_CATEGORIES = frozenset({"크리에이티브", "프로모션", "CRM", "브랜딩", "퍼포먼스", "기타", "미분류"})
 
 
+def _notion_oauth_login_path(pending_id: int, oauth_action: str) -> str:
+    from urllib.parse import urlencode
+
+    return "/api/notion/oauth/login?" + urlencode(
+        {"pending_id": int(pending_id), "action": (oauth_action or "approve").strip()}
+    )
+
+
 async def _ensure_tokens_for_docs(
-    pending: dict[str, Any], request: Request
+    pending: dict[str, Any],
+    request: Request,
+    *,
+    pending_id: int | None = None,
+    oauth_action: str = "approve",
 ) -> tuple[str | None, str | None]:
     """Google/Notion 링크가 있으면 각 OAuth(또는 Notion env) 토큰을 확보."""
     full_raw = (pending.get("full_text") or "").strip()
@@ -102,17 +114,21 @@ async def _ensure_tokens_for_docs(
         if not notion_token:
             notion_token = resolve_notion_token()
         if not notion_token:
-            raise HTTPException(
-                status_code=412,
-                detail={
-                    "code": "notion_auth_required",
-                    "message": (
-                        "Notion 연결이 필요합니다. Notion 연결 후 승인 시 "
-                        "페이지 피커에서 읽을 페이지(또는 상위 페이지)를 선택해주세요."
-                    ),
-                    "link_count": len(notion_links),
-                },
-            )
+            urls = [x["url"] for x in notion_links[:5]]
+            detail: dict[str, Any] = {
+                "code": "notion_auth_required",
+                "message": (
+                    "이 승인 건에 Notion 링크가 있습니다. Notion 로그인 후 "
+                    "피커에서 아래 페이지(또는 그 상위 페이지)를 선택하면 승인을 이어갑니다."
+                ),
+                "link_count": len(notion_links),
+                "notion_urls": urls,
+            }
+            if pending_id is not None:
+                detail["login_url"] = _notion_oauth_login_path(pending_id, oauth_action)
+                detail["pending_id"] = int(pending_id)
+                detail["oauth_action"] = oauth_action
+            raise HTTPException(status_code=412, detail=detail)
     return gdrive_token, notion_token
 
 
@@ -334,7 +350,9 @@ async def approve(
     if pending.get("status") != "대기중":
         raise HTTPException(status_code=400, detail="pending approval is not pending")
 
-    gdrive_token, notion_token = await _ensure_tokens_for_docs(pending, request)
+    gdrive_token, notion_token = await _ensure_tokens_for_docs(
+        pending, request, pending_id=id, oauth_action="approve"
+    )
 
     update_pending_status(id, "처리중")
 
@@ -413,7 +431,9 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
     today = date.today().isoformat()
 
     if action == "use_new":
-        gdrive_token, notion_token = await _ensure_tokens_for_docs(pending, request)
+        gdrive_token, notion_token = await _ensure_tokens_for_docs(
+            pending, request, pending_id=id, oauth_action="use_new"
+        )
         old_id = pending.get("conflict_old_history_id")
 
         update_pending_status(id, "처리중")
@@ -450,7 +470,9 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
         return {"ok": True, "action": "keep_old"}
 
     if action == "keep_both":
-        gdrive_token, notion_token = await _ensure_tokens_for_docs(pending, request)
+        gdrive_token, notion_token = await _ensure_tokens_for_docs(
+            pending, request, pending_id=id, oauth_action="keep_both"
+        )
         update_pending_status(id, "처리중")
 
         async def bg_keep_both() -> None:
