@@ -2945,22 +2945,16 @@ if (adminLoadMoreBtn) {
   } else {
     await checkGdriveAuthStatus();
     if (qs.get("notion_oauth") === "ok") {
-      const pid = qs.get("resume_pending");
-      if (pid && !sessionStorage.getItem(NOTION_RESUME_KEY)) {
-        sessionStorage.setItem(
-          NOTION_RESUME_KEY,
-          JSON.stringify({
-            pendingId: Number(pid),
-            action: qs.get("resume_action") || "approve",
-            body: {},
-          })
-        );
-      }
+      // 재개 정보는 OAuth 시작 전 이 세션이 직접 저장한 sessionStorage에서만 읽는다.
+      // URL 파라미터로는 재개하지 않음(조작된 링크로 인한 임의 승인 방지).
       await resumePendingApprovalAfterNotion();
       history.replaceState({}, "", window.location.pathname + window.location.hash);
     } else if (qs.get("notion_oauth") === "denied" && adminStatus) {
       switchView("admin");
       adminStatus.textContent = "Notion 연결이 취소되었습니다.";
+    } else if (qs.get("notion_oauth") === "state_error" && adminStatus) {
+      switchView("admin");
+      adminStatus.textContent = "Notion 연결 검증에 실패했습니다. 다시 시도해주세요.";
     }
   }
   addBubble(

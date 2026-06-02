@@ -90,9 +90,13 @@ def init_db() -> None:
                     bot_id TEXT,
                     owner_user_id TEXT,
                     owner_email TEXT,
+                    expires_at TIMESTAMP,
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
                 )
                 """
+            )
+            cur.execute(
+                "ALTER TABLE IF EXISTS notion_oauth_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP"
             )
             # multi-user gdrive oauth tokens: migrate old table(id=1) → session_id keyed
             cur.execute(
@@ -1168,6 +1172,7 @@ def upsert_notion_oauth_token(
     bot_id: str | None,
     owner_user_id: str | None,
     owner_email: str | None,
+    expires_at: Any | None = None,
 ) -> int:
     session_id = (session_id or "").strip()
     if not session_id:
@@ -1182,9 +1187,10 @@ def upsert_notion_oauth_token(
                 """
                 INSERT INTO notion_oauth_tokens (
                     session_id, access_token, refresh_token,
-                    workspace_id, workspace_name, bot_id, owner_user_id, owner_email
+                    workspace_id, workspace_name, bot_id, owner_user_id, owner_email,
+                    expires_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (session_id) DO UPDATE
                 SET access_token = EXCLUDED.access_token,
                     refresh_token = COALESCE(EXCLUDED.refresh_token, notion_oauth_tokens.refresh_token),
@@ -1192,7 +1198,8 @@ def upsert_notion_oauth_token(
                     workspace_name = EXCLUDED.workspace_name,
                     bot_id = EXCLUDED.bot_id,
                     owner_user_id = EXCLUDED.owner_user_id,
-                    owner_email = EXCLUDED.owner_email
+                    owner_email = EXCLUDED.owner_email,
+                    expires_at = EXCLUDED.expires_at
                 RETURNING id
                 """,
                 (
@@ -1204,6 +1211,7 @@ def upsert_notion_oauth_token(
                     bot_id,
                     owner_user_id,
                     owner_email,
+                    expires_at,
                 ),
             )
             row_id = int(cur.fetchone()["id"])
