@@ -423,8 +423,13 @@ let currentView = "inspect";
 /** 소재 검수 첨부 [{ base64?, mediaType, dataUrl, file, name, size, isVideo? }] — 전송은 항상 file 원본(FormData /inspect-upload). base64·dataUrl은 미리보기·버블용 */
 let inspectImageList = [];
 const MAX_INSPECT_IMAGES = 8;
-/** 로컬 첨부 업로드 상한 (바이트). 영상은 서버에서 압축합니다. */
-const MAX_INSPECT_UPLOAD_BYTES = 500 * 1024 * 1024;
+/** 로컬 첨부 업로드 상한 (바이트). 서버와 동일: 이미지 50MB, 영상 500MB(서버에서 압축). */
+const MAX_INSPECT_IMAGE_BYTES = 50 * 1024 * 1024;
+const MAX_INSPECT_VIDEO_BYTES = 500 * 1024 * 1024;
+function maxInspectBytesFor(file, isVideo) {
+  const v = isVideo || ((file && file.type) || "").startsWith("video/");
+  return v ? MAX_INSPECT_VIDEO_BYTES : MAX_INSPECT_IMAGE_BYTES;
+}
 
 let lastInspectResult = null;
 
@@ -1356,9 +1361,9 @@ imageInput.addEventListener("change", async (e) => {
   }
   try {
     for (const file of take) {
-      if (file.size >= MAX_INSPECT_UPLOAD_BYTES) {
+      if (file.size >= maxInspectBytesFor(file)) {
         alert(
-          "파일이 너무 큽니다 (최대 500MB)\n영상은 서버에서 압축하니, 500MB 미만 원본을 그대로 올려 주세요."
+          "파일이 너무 큽니다 (이미지 최대 50MB, 영상 최대 500MB)\n영상은 서버에서 압축하니 500MB 미만 원본을 올려 주세요."
         );
         continue;
       }
@@ -1519,12 +1524,12 @@ async function sendInspect() {
     let res;
     if (imagesCopy.length > 0) {
       for (const item of imagesCopy) {
-        if (item.file && item.file.size >= MAX_INSPECT_UPLOAD_BYTES) {
+        if (item.file && item.file.size >= maxInspectBytesFor(item.file, item.isVideo)) {
           removeLastBubble(chatLog);
           addBubble(
             chatLog,
             "bot",
-            "파일이 너무 큽니다 (최대 500MB)\n영상은 서버에서 압축하니, 500MB 미만 원본을 그대로 올려 주세요."
+            "파일이 너무 큽니다 (이미지 최대 50MB, 영상 최대 500MB)\n영상은 서버에서 압축하니 500MB 미만 원본을 올려 주세요."
           );
           return;
         }
@@ -2750,9 +2755,12 @@ async function submitManualIngest() {
       category: catRaw || null,
     });
     const n = res.doc_link_count || 0;
+    const nn = res.notion_link_count || 0;
     if (manualStatusEl) {
       manualStatusEl.textContent =
-        `히스토리 적재 완료 (#${res.history_id})` + (n > 0 ? ` · Google 문서 ${n}개 반영` : "");
+        `히스토리 적재 완료 (#${res.history_id})` +
+        (n > 0 ? ` · Google 문서 ${n}개 반영` : "") +
+        (nn > 0 ? ` · Notion ${nn}개 반영` : "");
       manualStatusEl.className = "admin-status";
     }
     if (manualTextEl) manualTextEl.value = "";

@@ -184,6 +184,7 @@ async def figma_inspect(body: FigmaInspectBody):
                 parts_one: list[Any] = [
                     types.Part.from_bytes(data=d, mime_type=mt),
                     (
+                        f"광고주 요청: {user_msg}\n"
                         f"파일명: {name}. 총 {total}장 중 {index}번째.\n"
                         "JSON으로 검수 결과만 출력하세요. 반드시 JSON만 출력하세요."
                     ),

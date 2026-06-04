@@ -185,12 +185,22 @@ def fetch_thread_replies(channel: str, thread_ts: str) -> list[dict[str, Any]]:
     if not thread_ts:
         return []
     client = _client()
-    try:
-        resp = client.conversations_replies(channel=channel, ts=thread_ts, limit=200)
-    except SlackApiError as e:
-        raise RuntimeError(f"Slack API error: {e.response.get('error')}") from e
+    replies: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        try:
+            resp = client.conversations_replies(
+                channel=channel, ts=thread_ts, limit=200, cursor=cursor
+            )
+        except SlackApiError as e:
+            raise RuntimeError(f"Slack API error: {e.response.get('error')}") from e
+        replies.extend(resp.get("messages", []) or [])
+        if not resp.get("has_more"):
+            break
+        cursor = (resp.get("response_metadata") or {}).get("next_cursor") or None
+        if not cursor:
+            break
 
-    replies = resp.get("messages", []) or []
     return [m for m in replies if m.get("ts") != thread_ts]
 
 

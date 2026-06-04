@@ -572,6 +572,22 @@ def update_pending_status(id: int, status: str) -> None:
         conn.commit()
 
 
+def claim_pending_status(id: int, expected_status: str, new_status: str) -> bool:
+    """expected_status일 때만 new_status로 원자적 전환. 전환에 성공하면 True.
+
+    동시 승인 요청 시 한 요청만 '대기중'→'처리중'을 차지하도록 하여 히스토리 중복 적재를 막는다.
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE pending_approvals SET status = %s WHERE id = %s AND status = %s",
+                (new_status, int(id), expected_status),
+            )
+            changed = cur.rowcount
+        conn.commit()
+        return changed > 0
+
+
 def update_pending_approved(id: int, history_id: int) -> None:
     with _connect() as conn:
         with conn.cursor() as cur:

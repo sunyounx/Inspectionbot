@@ -233,31 +233,50 @@ def _read_notion_page_playwright(url: str) -> str:
     return scrape_public_notion_page(url)
 
 
+def check_notion_page_access(url: str, token: str) -> bool:
+    """page 메타데이터만 GET하여 접근 가능 여부 확인(블록 미조회).
+
+    401/403/404 → False(미공유/권한없음으로 간주 → 재로그인·피커 유도).
+    파싱 실패·네트워크·기타 오류 → True(여기서 막지 않고 실제 읽기 단계에서 처리).
+    """
+    if not (token or "").strip():
+        return False
+    try:
+        api_id = _api_id(extract_page_id(url))
+    except Exception:
+        return True
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                f"https://api.notion.com/v1/pages/{api_id}",
+                headers=_headers(token),
+            )
+    except Exception:
+        return True
+    return resp.status_code not in (401, 403, 404)
+
+
 def read_notion_page(url: str, *, notion_token: str | None = None) -> str | None:
-    """Notion 본문: API 우선(OAuth 세션 > env), 403/404 시 Playwright. 토큰 없으면 Playwright만."""
+    """Notion 본문 읽기.
+
+    토큰이 있으면 API만 사용하고, 권한(401/403)·미존재(404)·기타 오류는 그대로 올린다
+    (공개 스크래핑으로 숨기지 않음 → 호출부에서 재로그인/피커 유도).
+    토큰이 없을 때만 공개 페이지 Playwright 스크래핑을 시도한다.
+    """
     token = resolve_notion_token(session_token=notion_token)
-    api_err: BaseException | None = None
 
     if token:
         try:
             return _read_notion_page_api(url, token)
-        except (NotionPermissionError, NotionNotFoundError) as e:
-            api_err = e
-            print(f"[notion api] failed, trying playwright: {url}: {e}", flush=True)
-        except RuntimeError:
+        except (NotionPermissionError, NotionNotFoundError, RuntimeError):
             raise
         except Exception as e:
             raise RuntimeError(f"Notion API 페이지 읽기 실패: {e}") from e
-    else:
-        print(f"[notion] no token, playwright only: {url}", flush=True)
 
+    print(f"[notion] no token, playwright only: {url}", flush=True)
     try:
         body = _read_notion_page_playwright(url)
         print(f"[notion playwright] ok {url} ({len(body)} chars)", flush=True)
         return body
     except Exception as pw_err:
-        if api_err is not None:
-            raise RuntimeError(
-                f"Notion API 실패: {api_err}; Playwright 읽기도 실패: {pw_err}"
-            ) from pw_err
         raise RuntimeError(f"Notion Playwright 읽기 실패: {pw_err}") from pw_err

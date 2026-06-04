@@ -20,7 +20,6 @@ from db.database import (
     get_latest_pending_for_source_ts,
     has_open_pending_for_source_ts,
     insert_pending_approval,
-    pending_source_ts_ever_seen,
 )
 from services.figma_service import (
     FigmaRateLimitError,
@@ -112,10 +111,6 @@ async def _process_file(file_key: str, advertiser_handles: set[str]) -> int:
             continue
 
         source_ts = f"figma:{file_key}:{root_id}"
-
-        # 승인/폐기로 닫힌 스레드는 다시 적재하지 않음.
-        if pending_source_ts_ever_seen(source_ts) and not has_open_pending_for_source_ts(source_ts):
-            continue
 
         sorted_thread = sorted(thread, key=lambda c: _parse_figma_iso(c.get("created_at") or ""))
 

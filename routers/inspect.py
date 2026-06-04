@@ -30,6 +30,11 @@ from services.video_utils import extract_frames_and_audio
 router = APIRouter(prefix="/api", tags=["inspect"], redirect_slashes=True)
 
 _MAX_INSPECT_IMAGES = 8
+_MAX_INSPECT_IMAGE_BYTES = 50 * 1024 * 1024
+_MAX_INSPECT_VIDEO_BYTES = 500 * 1024 * 1024
+_MAX_INSPECT_TOTAL_BYTES = 600 * 1024 * 1024
+# base64는 디코딩 전 길이로 거름(약 4/3 팽창). 이미지 전용 경로.
+_MAX_IMAGE_B64_LEN = _MAX_INSPECT_IMAGE_BYTES * 4 // 3 + 16
 
 
 def _normalize_image_pairs(req: InspectRequest) -> list[tuple[str, str]]:
@@ -63,13 +68,26 @@ def _build_contents(req: InspectRequest) -> Any:
         return req.message
 
     parts: list[Any] = []
+    total_bytes = 0
     for b64, mt in pairs:
         if not mt:
             raise HTTPException(status_code=400, detail="image_media_type is required for each image")
+        # 디코딩 전 길이로 거부(거대한 base64를 메모리에 디코딩하지 않음).
+        if len(b64 or "") > _MAX_IMAGE_B64_LEN:
+            raise HTTPException(
+                status_code=413,
+                detail=f"이미지가 너무 큽니다(최대 {_MAX_INSPECT_IMAGE_BYTES // (1024 * 1024)}MB).",
+            )
         try:
             image_bytes = base64.b64decode(b64)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"invalid image_base64: {e}") from e
+        total_bytes += len(image_bytes)
+        if total_bytes > _MAX_INSPECT_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"전체 이미지 용량이 너무 큽니다(최대 {_MAX_INSPECT_TOTAL_BYTES // (1024 * 1024)}MB).",
+            )
         if mt.startswith("image/"):
             try:
                 image_bytes, mt = resize_thumbnail(image_bytes, 800)
@@ -158,13 +176,27 @@ async def inspect_upload(
 
     parts: list[Any] = []
     video_idx = 0
+    total_bytes = 0
 
     for uf in file_list:
-        data = await uf.read()
-        if not data:
-            continue
         mt = (uf.content_type or "application/octet-stream").strip() or "application/octet-stream"
         fname = ((uf.filename or "file").strip() or "file")[:512]
+        # 타입별 상한(영상 500MB, 이미지 50MB) + 1바이트만 읽어 초과 판단(초과분은 메모리에 안 올림).
+        per_file_cap = _MAX_INSPECT_VIDEO_BYTES if mt.startswith("video/") else _MAX_INSPECT_IMAGE_BYTES
+        data = await uf.read(per_file_cap + 1)
+        if len(data) > per_file_cap:
+            raise HTTPException(
+                status_code=413,
+                detail=f"파일이 너무 큽니다(최대 {per_file_cap // (1024 * 1024)}MB): {fname[:200]}",
+            )
+        if not data:
+            continue
+        total_bytes += len(data)
+        if total_bytes > _MAX_INSPECT_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"전체 업로드 용량이 너무 큽니다(최대 {_MAX_INSPECT_TOTAL_BYTES // (1024 * 1024)}MB).",
+            )
 
         if mt.startswith("video/"):
             result = await asyncio.to_thread(extract_frames_and_audio, data)

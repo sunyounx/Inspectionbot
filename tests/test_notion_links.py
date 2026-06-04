@@ -10,6 +10,7 @@ if str(_ROOT) not in sys.path:
 from services.notion_service import (
     NotionNotFoundError,
     NotionPermissionError,
+    check_notion_page_access,
     extract_page_id,
     read_notion_page,
     _should_try_playwright,
@@ -221,7 +222,7 @@ class TestReadNotionPage(unittest.TestCase):
     @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
     @patch("services.notion_service._read_notion_page_playwright")
     @patch("services.notion_service.httpx.Client")
-    def test_403_raises_after_playwright_fails(
+    def test_api_403_raises_permission_no_playwright(
         self, mock_client_cls: MagicMock, mock_pw: MagicMock
     ) -> None:
         client = MagicMock()
@@ -231,13 +232,29 @@ class TestReadNotionPage(unittest.TestCase):
         client.__enter__.return_value = client
         client.__exit__.return_value = False
         mock_client_cls.return_value = client
-        mock_pw.side_effect = RuntimeError("pw fail")
 
-        with self.assertRaises(RuntimeError) as ctx:
+        # 토큰이 있으면 권한 오류를 그대로 올리고 Playwright로 폴백하지 않는다.
+        with self.assertRaises(NotionPermissionError):
             read_notion_page(self._URL)
-        self.assertIn("권한", str(ctx.exception))
-        self.assertIn("pw fail", str(ctx.exception))
-        mock_pw.assert_called_once_with(self._URL)
+        mock_pw.assert_not_called()
+
+    @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
+    @patch("services.notion_service._read_notion_page_playwright")
+    @patch("services.notion_service.httpx.Client")
+    def test_api_404_raises_not_found_no_playwright(
+        self, mock_client_cls: MagicMock, mock_pw: MagicMock
+    ) -> None:
+        client = MagicMock()
+        resp = MagicMock(status_code=404)
+        resp.json.return_value = {"message": "not found"}
+        client.get.return_value = resp
+        client.__enter__.return_value = client
+        client.__exit__.return_value = False
+        mock_client_cls.return_value = client
+
+        with self.assertRaises(NotionNotFoundError):
+            read_notion_page(self._URL)
+        mock_pw.assert_not_called()
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("services.notion_service._read_notion_page_playwright")
@@ -248,23 +265,30 @@ class TestReadNotionPage(unittest.TestCase):
         mock_pw.assert_called_once_with(self._URL)
 
     @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
-    @patch("services.notion_service._read_notion_page_playwright")
     @patch("services.notion_service.httpx.Client")
-    def test_api_403_falls_back_to_playwright(
-        self, mock_client_cls: MagicMock, mock_pw: MagicMock
-    ) -> None:
+    def test_check_access_true_on_200(self, mock_client_cls: MagicMock) -> None:
         client = MagicMock()
-        resp = MagicMock(status_code=403)
-        resp.json.return_value = {"message": "forbidden"}
-        client.get.return_value = resp
+        client.get.return_value = MagicMock(status_code=200)
         client.__enter__.return_value = client
         client.__exit__.return_value = False
         mock_client_cls.return_value = client
-        mock_pw.return_value = "Playwright body text here with enough length for validation"
+        self.assertTrue(check_notion_page_access(self._URL, "secret_test"))
 
-        text = read_notion_page(self._URL)
-        self.assertIn("Playwright", text)
-        mock_pw.assert_called_once_with(self._URL)
+    @patch.dict("os.environ", {"NOTION_API_TOKEN": "secret_test"})
+    @patch("services.notion_service.httpx.Client")
+    def test_check_access_false_on_403_404(self, mock_client_cls: MagicMock) -> None:
+        for code in (401, 403, 404):
+            client = MagicMock()
+            client.get.return_value = MagicMock(status_code=code)
+            client.__enter__.return_value = client
+            client.__exit__.return_value = False
+            mock_client_cls.return_value = client
+            self.assertFalse(
+                check_notion_page_access(self._URL, "secret_test"), f"{code} should be False"
+            )
+
+    def test_check_access_false_without_token(self) -> None:
+        self.assertFalse(check_notion_page_access(self._URL, ""))
 
     def test_should_try_playwright_types(self) -> None:
         self.assertTrue(_should_try_playwright(NotionPermissionError("x")))
@@ -390,6 +414,41 @@ class TestCancelApproval(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             cancel_approval(7)
         self.assertEqual(ctx.exception.status_code, 400)
+
+
+class TestEnsureTokensForDocs(unittest.IsolatedAsyncioTestCase):
+    _NOTION_PENDING = {
+        "full_text": "https://www.notion.so/ws/Page-abc123def4567890abcdef1234567890"
+    }
+
+    @patch("routers.approval.check_notion_page_access", return_value=False)
+    @patch("routers.approval.resolve_notion_token", return_value="tok")
+    @patch("routers.approval.get_gdrive_session_id", return_value=None)
+    async def test_inaccessible_notion_link_raises_412(self, *_mocks) -> None:
+        from fastapi import HTTPException
+
+        from routers.approval import _ensure_tokens_for_docs
+
+        with self.assertRaises(HTTPException) as ctx:
+            await _ensure_tokens_for_docs(
+                dict(self._NOTION_PENDING), MagicMock(), pending_id=7, oauth_action="approve"
+            )
+        self.assertEqual(ctx.exception.status_code, 412)
+        self.assertEqual(ctx.exception.detail["code"], "notion_auth_required")
+        self.assertEqual(ctx.exception.detail["pending_id"], 7)
+        self.assertEqual(ctx.exception.detail["oauth_action"], "approve")
+
+    @patch("routers.approval.check_notion_page_access", return_value=True)
+    @patch("routers.approval.resolve_notion_token", return_value="tok")
+    @patch("routers.approval.get_gdrive_session_id", return_value=None)
+    async def test_accessible_notion_link_passes(self, *_mocks) -> None:
+        from routers.approval import _ensure_tokens_for_docs
+
+        gdrive_token, notion_token = await _ensure_tokens_for_docs(
+            dict(self._NOTION_PENDING), MagicMock(), pending_id=7
+        )
+        self.assertIsNone(gdrive_token)
+        self.assertEqual(notion_token, "tok")
 
 
 if __name__ == "__main__":

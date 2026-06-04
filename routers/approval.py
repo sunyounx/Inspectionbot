@@ -13,6 +13,7 @@ from starlette.background import BackgroundTask
 from starlette.responses import JSONResponse
 
 from db.database import (
+    claim_pending_status,
     get_active_history,
     get_files_by_message_ts,
     get_files_by_ts_list,
@@ -47,7 +48,11 @@ from services.gemini_service import (
     refine_with_document,
 )
 from services.image_utils import resize_thumbnail
-from services.notion_service import _max_notion_links, read_notion_page
+from services.notion_service import (
+    _max_notion_links,
+    check_notion_page_access,
+    read_notion_page,
+)
 from services.slack_service import (
     download_slack_image,
     extract_document_links,
@@ -69,6 +74,26 @@ def _notion_oauth_login_path(pending_id: int, oauth_action: str) -> str:
     return "/api/notion/oauth/login?" + urlencode(
         {"pending_id": int(pending_id), "action": (oauth_action or "approve").strip()}
     )
+
+
+def _notion_auth_required(
+    links: list[dict[str, Any]],
+    pending_id: int | None,
+    oauth_action: str,
+    *,
+    message: str,
+) -> HTTPException:
+    detail: dict[str, Any] = {
+        "code": "notion_auth_required",
+        "message": message,
+        "link_count": len(links),
+        "notion_urls": [x["url"] for x in links[:5]],
+    }
+    if pending_id is not None:
+        detail["login_url"] = _notion_oauth_login_path(pending_id, oauth_action)
+        detail["pending_id"] = int(pending_id)
+        detail["oauth_action"] = oauth_action
+    return HTTPException(status_code=412, detail=detail)
 
 
 async def _ensure_tokens_for_docs(
@@ -114,21 +139,32 @@ async def _ensure_tokens_for_docs(
         if not notion_token:
             notion_token = resolve_notion_token()
         if not notion_token:
-            urls = [x["url"] for x in notion_links[:5]]
-            detail: dict[str, Any] = {
-                "code": "notion_auth_required",
-                "message": (
+            raise _notion_auth_required(
+                notion_links,
+                pending_id,
+                oauth_action,
+                message=(
                     "이 승인 건에 Notion 링크가 있습니다. Notion 로그인 후 "
                     "피커에서 아래 페이지(또는 그 상위 페이지)를 선택하면 승인을 이어갑니다."
                 ),
-                "link_count": len(notion_links),
-                "notion_urls": urls,
-            }
-            if pending_id is not None:
-                detail["login_url"] = _notion_oauth_login_path(pending_id, oauth_action)
-                detail["pending_id"] = int(pending_id)
-                detail["oauth_action"] = oauth_action
-            raise HTTPException(status_code=412, detail=detail)
+            )
+
+        # 토큰이 있어도 그 계정/integration이 해당 페이지에 권한이 없으면(미공유) 적재 전에 차단.
+        inaccessible = [
+            link
+            for link in notion_links[: _max_notion_links()]
+            if not await asyncio.to_thread(check_notion_page_access, link["url"], notion_token)
+        ]
+        if inaccessible:
+            raise _notion_auth_required(
+                inaccessible,
+                pending_id,
+                oauth_action,
+                message=(
+                    "연결된 Notion 계정이 아래 페이지를 읽을 권한이 없습니다. 다시 로그인하거나 "
+                    "피커에서 해당 페이지(또는 그 상위 페이지)를 선택한 뒤 다시 시도해주세요."
+                ),
+            )
     return gdrive_token, notion_token
 
 
@@ -354,7 +390,8 @@ async def approve(
         pending, request, pending_id=id, oauth_action="approve"
     )
 
-    update_pending_status(id, "처리중")
+    if not claim_pending_status(id, "대기중", "처리중"):
+        raise HTTPException(status_code=409, detail="이미 처리 중이거나 처리된 승인입니다.")
 
     async def bg_refine() -> None:
         try:
@@ -436,7 +473,8 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
         )
         old_id = pending.get("conflict_old_history_id")
 
-        update_pending_status(id, "처리중")
+        if not claim_pending_status(id, "대기중", "처리중"):
+            raise HTTPException(status_code=409, detail="이미 처리 중이거나 처리된 승인입니다.")
 
         async def bg_use_new() -> None:
             try:
@@ -473,7 +511,8 @@ async def resolve_conflict(id: int, body: ConflictResolveBody, request: Request)
         gdrive_token, notion_token = await _ensure_tokens_for_docs(
             pending, request, pending_id=id, oauth_action="keep_both"
         )
-        update_pending_status(id, "처리중")
+        if not claim_pending_status(id, "대기중", "처리중"):
+            raise HTTPException(status_code=409, detail="이미 처리 중이거나 처리된 승인입니다.")
 
         async def bg_keep_both() -> None:
             try:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -89,6 +92,33 @@ def _client_id() -> str:
 
 def _client_secret() -> str:
     return _oauth_env("GOOGLE_CLIENT_SECRET")
+
+
+_OAUTH_STATE_COOKIE = "gdrive_oauth_state"
+_OAUTH_STATE_PATH = "/api/gdrive/oauth"
+_OAUTH_STATE_MAX_AGE = 600
+
+
+def _sign_oauth_nonce(nonce: str) -> str:
+    return hmac.new(_client_secret().encode(), nonce.encode(), hashlib.sha256).hexdigest()
+
+
+def _verify_oauth_state_cookie(cookie_val: str | None, state: str | None) -> bool:
+    """콜백 state(쿼리)와 HttpOnly 쿠키(서명된 nonce) 대조 — 로그인 CSRF 방어."""
+    s = (state or "").strip()
+    c = (cookie_val or "").strip()
+    if not s or "." not in c:
+        return False
+    nonce, _, sig = c.partition(".")
+    if not nonce or not hmac.compare_digest(_sign_oauth_nonce(nonce), sig):
+        return False
+    return hmac.compare_digest(nonce, s)
+
+
+def _delete_state_redirect(url: str) -> RedirectResponse:
+    resp = RedirectResponse(url=url, status_code=302)
+    resp.delete_cookie(key=_OAUTH_STATE_COOKIE, path=_OAUTH_STATE_PATH)
+    return resp
 
 
 def _utcnow() -> datetime:
@@ -327,6 +357,7 @@ async def gdrive_inspect(body: GDriveInspectBody, request: Request):
             parts_one: list[Any] = [
                 types.Part.from_bytes(data=d, mime_type=mt),
                 (
+                    f"광고주 요청: {user_msg}\n"
                     f"파일명: {name}. 총 {total}장 중 {index}번째.\n"
                     "JSON으로 검수 결과만 출력하세요. 반드시 JSON만 출력하세요."
                 ),
@@ -588,6 +619,7 @@ async def gdrive_thumbnail(file_id: str, request: Request):
 @router.get("/gdrive/oauth/login")
 def oauth_login(request: Request):
     sid = get_gdrive_session_id(request) or str(uuid4())
+    nonce = secrets.token_urlsafe(24)
     params = {
         "client_id": _client_id(),
         "redirect_uri": _redirect_uri(),
@@ -596,15 +628,35 @@ def oauth_login(request: Request):
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
+        "state": nonce,
     }
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
     resp = RedirectResponse(url=url, status_code=302)
     _ensure_session_cookie(resp, sid)
+    resp.set_cookie(
+        key=_OAUTH_STATE_COOKIE,
+        value=f"{nonce}.{_sign_oauth_nonce(nonce)}",
+        httponly=True,
+        samesite="lax",
+        secure=(os.getenv("COOKIE_SECURE") or "").strip().lower() in ("1", "true", "yes", "on"),
+        max_age=_OAUTH_STATE_MAX_AGE,
+        path=_OAUTH_STATE_PATH,
+    )
     return resp
 
 
 @router.get("/gdrive/oauth/callback")
-async def oauth_callback(code: str, request: Request):
+async def oauth_callback(
+    request: Request,
+    code: str | None = None,
+    error: str | None = None,
+    state: str | None = None,
+):
+    # 사용자가 동의 화면에서 취소하면 code 없이 error만 돌아온다(422 대신 안내 리다이렉트).
+    if (error or "").strip():
+        return _delete_state_redirect("/static/index.html?gdrive_oauth=denied")
+    if not _verify_oauth_state_cookie(request.cookies.get(_OAUTH_STATE_COOKIE), state):
+        return _delete_state_redirect("/static/index.html?gdrive_oauth=state_error")
     code = (code or "").strip()
     if not code:
         raise HTTPException(status_code=400, detail="missing code")
@@ -647,6 +699,7 @@ async def oauth_callback(code: str, request: Request):
     )
     resp = RedirectResponse(url="/static/index.html", status_code=302)
     _ensure_session_cookie(resp, sid)
+    resp.delete_cookie(key=_OAUTH_STATE_COOKIE, path=_OAUTH_STATE_PATH)
     return resp
 
 
