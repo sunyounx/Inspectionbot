@@ -96,6 +96,27 @@ def _notion_auth_required(
     return HTTPException(status_code=412, detail=detail)
 
 
+def _pending_text_with_file_urls(pending: dict[str, Any]) -> str:
+    """승인 문서 탐지용 텍스트. Slack 표시명 치환으로 사라진 링크는 message_files에서 복원."""
+    full_raw = pending.get("full_text") or ""
+    if not isinstance(full_raw, str):
+        full_raw = str(full_raw or "")
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for key in ("parent_ts", "source_ts"):
+        ts = (pending.get(key) or "").strip()
+        if not ts:
+            continue
+        for file_row in get_files_by_message_ts(ts):
+            url = (file_row.get("url") or "").strip()
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+
+    return "\n".join([full_raw.strip(), *urls]).strip()
+
+
 async def _ensure_tokens_for_docs(
     pending: dict[str, Any],
     request: Request,
@@ -104,7 +125,7 @@ async def _ensure_tokens_for_docs(
     oauth_action: str = "approve",
 ) -> tuple[str | None, str | None]:
     """Google/Notion 링크가 있으면 각 OAuth(또는 Notion env) 토큰을 확보."""
-    full_raw = (pending.get("full_text") or "").strip()
+    full_raw = _pending_text_with_file_urls(pending)
     doc_links = extract_document_links(full_raw)
     notion_links = extract_notion_links(full_raw)
     sid = get_gdrive_session_id(request)
@@ -230,11 +251,7 @@ async def _resolve_doc_content(
     notion_token: str | None = None,
 ) -> str | None:
     """Google/Notion 문서 읽기만 수행. GEMINI_SEMAPHORE 밖에서 호출."""
-    full_raw = pending.get("full_text") or ""
-    if isinstance(full_raw, str):
-        full_raw = full_raw.strip()
-    else:
-        full_raw = str(full_raw or "")
+    full_raw = _pending_text_with_file_urls(pending)
 
     doc_links = extract_document_links(full_raw)
     notion_links = extract_notion_links(full_raw)

@@ -120,7 +120,8 @@ def clean_slack_markup(text: str) -> str:
     t = _SLACK_SUBTEAM_PIPE_RE.sub(r"@\1", t)
     t = _SLACK_SUBTEAM_BARE_RE.sub("@subteam", t)
     t = _SLACK_SPECIAL_RE.sub(r"@\1", t)
-    t = _SLACK_LINK_PIPE_RE.sub(r"\2", t)
+    # <url|라벨> → "라벨 (url)": URL을 보존해야 Notion/Docs 링크 추출·승인 OAuth가 동작한다.
+    t = _SLACK_LINK_PIPE_RE.sub(r"\2 (\1)", t)
     t = _SLACK_LINK_PLAIN_RE.sub(r"\1", t)
     t = _SLACK_EMOJI_RE.sub("", t)
     t = _SLACK_BOLD_RE.sub(r"\1", t)

@@ -353,6 +353,31 @@ class TestResolveDocContent(unittest.IsolatedAsyncioTestCase):
         self.assertIn("notion body", doc_content or "")
         self.assertIn("---", doc_content or "")
 
+    @patch("routers.approval.get_files_by_message_ts")
+    @patch("routers.approval.read_notion_page")
+    @patch("routers.approval.read_workspace_document")
+    async def test_notion_link_restored_from_message_files(
+        self,
+        mock_read_doc: MagicMock,
+        mock_read_notion: MagicMock,
+        mock_get_files: MagicMock,
+    ) -> None:
+        from routers.approval import _resolve_doc_content
+
+        notion_url = "https://www.notion.so/Brand-OS-v3-0-365b901b86d780409783d813f274f06b"
+        mock_get_files.return_value = [{"url": notion_url, "external_type": "notion"}]
+        mock_read_notion.return_value = "notion body"
+
+        doc_content = await _resolve_doc_content(
+            {"full_text": "브랜드북 올더뮤 Brand OS v3.0", "source_ts": "123.456"},
+            None,
+            notion_token="tok",
+        )
+
+        self.assertIn("notion body", doc_content or "")
+        mock_read_doc.assert_not_called()
+        mock_read_notion.assert_called_once_with(notion_url, notion_token="tok")
+
 
 class TestInsertRefinedHistory(unittest.IsolatedAsyncioTestCase):
     @patch("routers.approval.refine_with_document")
@@ -449,6 +474,32 @@ class TestEnsureTokensForDocs(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(gdrive_token)
         self.assertEqual(notion_token, "tok")
+
+    @patch(
+        "routers.approval.get_files_by_message_ts",
+        return_value=[
+            {
+                "url": "https://www.notion.so/Brand-OS-v3-0-365b901b86d780409783d813f274f06b",
+                "external_type": "notion",
+            }
+        ],
+    )
+    @patch("routers.approval.resolve_notion_token", return_value=None)
+    @patch("routers.approval.get_gdrive_session_id", return_value=None)
+    async def test_notion_link_in_message_files_requires_oauth(self, *_mocks) -> None:
+        from fastapi import HTTPException
+
+        from routers.approval import _ensure_tokens_for_docs
+
+        with self.assertRaises(HTTPException) as ctx:
+            await _ensure_tokens_for_docs(
+                {"full_text": "브랜드북 올더뮤 Brand OS v3.0", "source_ts": "123.456"},
+                MagicMock(),
+                pending_id=7,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 412)
+        self.assertEqual(ctx.exception.detail["code"], "notion_auth_required")
 
 
 if __name__ == "__main__":

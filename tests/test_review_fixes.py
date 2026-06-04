@@ -78,6 +78,24 @@ class TestInspectBase64Limit(unittest.TestCase):
         self.assertEqual(out[-1], "m")
 
 
+class TestSlackPipeLinkPreservesUrl(unittest.TestCase):
+    def test_pipe_link_keeps_url_for_extraction(self) -> None:
+        from services.slack_service import (
+            clean_slack_markup,
+            extract_document_links,
+            extract_notion_links,
+        )
+
+        raw = (
+            "<https://www.notion.so/Brand-OS-365b901b86d780409783d813f274f06b|올더뮤 Brand OS> "
+            "<https://docs.google.com/document/d/abc123XYZ/edit|기획서>"
+        )
+        cleaned = clean_slack_markup(raw)
+        self.assertIn("notion.so/Brand-OS", cleaned)
+        self.assertEqual(len(extract_notion_links(cleaned)), 1)
+        self.assertEqual(len(extract_document_links(cleaned)), 1)
+
+
 class TestApproveConcurrency(unittest.IsolatedAsyncioTestCase):
     @patch("routers.approval.claim_pending_status", return_value=False)
     @patch("routers.approval._ensure_tokens_for_docs", new_callable=AsyncMock)
